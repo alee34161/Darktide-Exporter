@@ -12,6 +12,7 @@
 
     "weapons": {
         "powersword_p1_m2":  "Power Sword",
+        "powersword_p2_m1": "Power Falchion",
         "combatsword_p3_m2": "Duelling Sword",
         "combataxe_p2_m3":   "Tactical Axe",
         "combataxe_p2_m1":   "Tactical Axe",
@@ -23,7 +24,10 @@
         "dual_shivs_p1_m1":  "Dual Shivs",
         "plasma_rifle_p1_m1": "Plasma Rifle",
         "dual_autopistols_p1_m1": "Dual Autopistols",
-        "powermaul_p2_m1": "Arbites Shock Maul"
+        "powermaul_p2_m1": "Arbites Shock Maul",
+        "plasmagun_p1_m1": "Plasma Gun",
+        "boltpistol_p1_m1": "Bolt Pistol",
+        "shotgun_p1_m1": "Combat Shotgun"
     },
 
     "blitz": {
@@ -32,7 +36,8 @@
         "psyker_grenade_smite":           "Smite",
         "adamant_whistle":                "Remote Detonation",
         "broker_blitz_missile_launcher":  "Boom Bringer",
-        "psyker_brain_burst_improved":    "Brain Rupture"
+        "psyker_brain_burst_improved":    "Brain Rupture",
+        "veteran_grenade_apply_bleed":    "Shredder Frag Grenade"
     },
 
     "aura": {
@@ -50,8 +55,9 @@
         "psyker_combat_ability_stance":                                        "Scrier's Gaze",
         "adamant_stance":                                                      "Castigator's Stance",
         "zealot_bolstering_prayer":                                            "Chorus of Spiritual Fortitude",
-        "psyker_combat_ability_force_shield":                                  "Telekine Shield",
-        "broker_ability_focus_improved":                                       "Desperado"
+        "psyker_combat_ability_force_field":                                  "Telekine Shield",
+        "broker_ability_focus_improved":                                       "Desperado",
+        "zealot_stealth": "Shroudfield"
     },
 
     "keystones": {
