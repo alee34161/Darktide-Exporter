@@ -27,7 +27,8 @@
         "powermaul_p2_m1": "Arbites Shock Maul",
         "plasmagun_p1_m1": "Plasma Gun",
         "boltpistol_p1_m1": "Bolt Pistol",
-        "shotgun_p1_m1": "Combat Shotgun"
+        "shotgun_p1_m1": "Combat Shotgun",
+        "powermaul_shield_p1_m1": "Shock Maul and Suppression Shield"
     },
 
     "blitz": {
@@ -37,7 +38,8 @@
         "adamant_whistle":                "Remote Detonation",
         "broker_blitz_missile_launcher":  "Boom Bringer",
         "psyker_brain_burst_improved":    "Brain Rupture",
-        "veteran_grenade_apply_bleed":    "Shredder Frag Grenade"
+        "veteran_grenade_apply_bleed":    "Shredder Frag Grenade",
+        "adamant_shock_mine":           "Voltaic Shock Mine"
     },
 
     "aura": {
@@ -46,7 +48,8 @@
         "adamant_companion_aura":                        "Part of the Squad",
         "zealot_corruption_healing_coherency_improved":  "Beacon of Purity",
         "zealot_toughness_damage_reduction_coherency_improved": "Benediction",
-        "broker_aura_gunslinger_improved":                "Gunslinger Improved"
+        "broker_aura_gunslinger_improved":                "Gunslinger Improved",
+        "adamant_damage_vs_staggered_aura":             "Breaking Dissent"
 
     },
 
@@ -57,7 +60,8 @@
         "zealot_bolstering_prayer":                                            "Chorus of Spiritual Fortitude",
         "psyker_combat_ability_force_field":                                  "Telekine Shield",
         "broker_ability_focus_improved":                                       "Desperado",
-        "zealot_stealth": "Shroudfield"
+        "zealot_stealth": "Shroudfield",
+        "adamant_charge": "Break the Line"
     },
 
     "keystones": {
@@ -67,6 +71,7 @@
         "adamant_forceful":        "Forceful",
         "adamant_companion_focus_elite": "Unleashed Brutality",
         "psyker_increased_max_souls": "Warp Siphon",
-        "broker_keystone_vultures_mark_on_kill": "Vulture's Mark"
+        "broker_keystone_vultures_mark_on_kill": "Vulture's Mark",
+        "adamant_disable_companion": "Lone Wolf"
     }
 }
