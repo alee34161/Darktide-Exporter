@@ -22,7 +22,7 @@
         "shotgun_p4_m2":     "Exterminator Shotgun",
         "laspistol_p1_m1":   "Heavy Laspistol",
         "forcestaff_p2_m1":   "Inferno Force Staff",
-        "dual_shivs_p1_m1":  "Dual Shivs",
+        "dual_shivs_p1_m1":  "Shivs",
         "plasma_rifle_p1_m1": "Plasma Rifle",
         "dual_autopistols_p1_m1": "Dual Autopistols",
         "powermaul_p2_m1": "Arbites Shock Maul",
@@ -37,7 +37,10 @@
         "phosphor_pistol_p1_m1": "Phosphor Blast Pistol",
         "ogryn_powermaul_p1_m1": "Power Maul",
         "ogryn_rippergun_p1_m1": "Ripper Gun",
-        "ogryn_rippergun_p1_m2": "Ripper Gun"
+        "transonic_sword_transonic_knife_p1_m1": "Paired Transonic Blades",
+        "powermaul_p1_m2": "Shock Maul",
+        "arc_rifle_p1_m1": "Arc Rifle",
+        "needlepistol_p1_m2": "Needle Pistol"
     },
 
     "defaults": {
@@ -71,7 +74,9 @@
         "adamant_damage_vs_staggered_aura":             "Breaking Dissent",
         "cryptic_aura_weapon_improved":             "Foe-Render Creed",
         "ogryn_melee_damage_coherency_improved":    "Bonebreaker's Aura",
-        "cryptic_coherency_regen_aura": "Base Aura"
+        "cryptic_coherency_regen_aura": "Base Aura",
+        "cryptic_coherency_regen_aura_improved": "Resurgence",
+        "cryptic_ammo_aura":    "Ammunition Deposit"
 
     },
 
@@ -88,7 +93,9 @@
         "cryptic_precision_stance": "Advanced Combat Doctrines",
         "cryptic_discharge_base":   "Base Combat Ability",
         "ogryn_taunt_shout":    "Loyal Protector",
-        "cryptic_chordclaw":    "Chordclaw Strike"
+        "cryptic_chordclaw":    "Chordclaw Strike",
+        "cryptic_discharge":    "Voltaic Emitter",
+        "broker_ability_stimm_field":   "Stimm Supply"
 
     },
 
@@ -104,6 +111,8 @@
         "veteran_snipers_focus":    "Marksman's Focus",
         "cryptic_overload_keystone":    "Power Overload",
         "cryptic_redline":  "Redline Capacitors",
-        "ogryn_passive_heavy_hitter":   "Heavy Hitter"
+        "ogryn_passive_heavy_hitter":   "Heavy Hitter",
+        "broker_keystone_chemical_dependency":  "Chemical Dependency",
+        "cryptic_dissector":    "Flensing Protocols"
     }
 }
