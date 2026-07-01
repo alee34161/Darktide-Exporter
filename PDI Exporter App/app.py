@@ -28,10 +28,7 @@ except ImportError:
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-SPREADSHEET_ID = os.environ.get(
-    "GOOGLE_SHEET_ID",
-    "1GVdoDjcDitcfeEic1GWVxtkGJF-ju85Up76TaZOro7I"
-)
+SPREADSHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "")
 
 PLAYER_TABS = {
     "Steven":  "Steven Data",
@@ -39,6 +36,12 @@ PLAYER_TABS = {
     "Lee":     "Lee Data",
     "Blitter": "Blitter Data",
 }
+
+# Players whose names are NOT in PLAYER_TABS get routed here.
+# Multiple randoms from the same session are all stored in this single tab,
+# each as their own stats+equip row pair, with their name appended at the end
+# of the stats row so the Apps Script can identify them per run.
+RANDOMS_TAB = os.environ.get("RANDOMS_TAB_NAME", "Randoms")
 
 TODO = "TODO"
 
@@ -68,27 +71,66 @@ def lookup(section, key):
     val = _LOOKUP.get(section, {}).get(key, "")
     return val if val else key
 
+def _default_keys_for(cat):
+    """
+    Return the set of talent keys that count as "default" for a category,
+    per lookup.json's top-level "defaults" section, e.g.:
+        "defaults": {
+            "blitz": "default_blitz_key",
+            "aura": ["default_aura_key_a", "default_aura_key_b"],
+            "combat_ability": "default_combat_ability_key"
+        }
+    A category can map to a single key (string) or multiple (list).
+    """
+    raw = _LOOKUP.get("defaults", {}).get(cat)
+    if not raw:
+        return set()
+    if isinstance(raw, str):
+        return {raw}
+    return set(raw)
+
 def resolve_talents(talents_selected):
     """
     Given a dict of {talent_key: 1} from the exporter, search lookup.json
     sections to find blitz, aura, combat_ability, and keystone(s).
+
+    A player can have multiple talents in the same category (e.g. an aura
+    granted by a curio in addition to their selected aura). Only ONE should
+    be reported: the non-default one if present, otherwise the default.
+    Keystones still combine all matches (a player can run more than one).
+
     Returns a dict with those four keys filled in (display name or raw key
     as fallback, TODO if none found).
     """
+    # Each entry is (display_name, raw_key) so we can tell defaults apart
     result = {cat: [] for cat in _TALENT_CATEGORIES}
     for talent_key in talents_selected:
         for cat in _TALENT_CATEGORIES:
             section = _LOOKUP.get(cat, {})
             if talent_key in section and talent_key != "_comment":
                 display = section[talent_key]
-                result[cat].append(display if display else talent_key)
+                result[cat].append((display if display else talent_key, talent_key))
                 break  # a key only belongs to one category
 
+    def pick_single(cat):
+        """Prefer a non-default match; fall back to a default; else TODO."""
+        matches = result[cat]
+        if not matches:
+            return TODO
+        defaults = _default_keys_for(cat)
+        non_default = [display for display, raw_key in matches if raw_key not in defaults]
+        if non_default:
+            return non_default[0]
+        # Nothing but defaults matched (or no defaults configured at all)
+        return matches[0][0]
+
+    keystone_displays = [display for display, _raw_key in result["keystones"]]
+
     return {
-        "blitz":          result["blitz"][0]               if result["blitz"]          else TODO,
-        "aura":           result["aura"][0]                if result["aura"]           else TODO,
-        "combat_ability": result["combat_ability"][0]      if result["combat_ability"] else TODO,
-        "keystones":      "/".join(result["keystones"])    if result["keystones"]      else TODO,
+        "blitz":          pick_single("blitz"),
+        "aura":           pick_single("aura"),
+        "combat_ability": pick_single("combat_ability"),
+        "keystones":      "/".join(keystone_displays) if keystone_displays else TODO,
     }
 
 # PDI_Exporter writes via DMF:dtf to DARKTIDE\binaries\dump\
@@ -278,52 +320,156 @@ def get_next_stats_row(service, tab_name):
     return next_row + 1 if next_row % 2 != 0 else next_row
 
 
-def upload_to_sheets(report, player_map, log_fn):
-    """Upload report to Sheets. player_map = {in_game_name: real_name}."""
-    service = get_sheets_service()
-    for in_game, stats in report.items():
-        real_name = player_map.get(in_game)
-        if not real_name:
-            log_fn(f"  SKIP {in_game} — not in player mapping")
-            continue
-        tab = PLAYER_TABS.get(real_name)
-        if not tab:
-            log_fn(f"  SKIP {in_game} — '{real_name}' has no matching tab")
-            continue
+def _build_equip_row(stats):
+    return [
+        stats.get("class",          TODO),
+        stats.get("melee_weapon",   TODO),
+        stats.get("ranged_weapon",  TODO),
+        stats.get("blitz",          TODO),
+        stats.get("aura",           TODO),
+        stats.get("combat_ability", TODO),
+        stats.get("keystones",      TODO),
+    ]
 
-        row = get_next_stats_row(service, tab)
-        stats_row = [
-            stats["date"],              stats["start_time"],
-            stats["melee_elite_kills"], stats["ranged_elite_kills"],
-            stats["melee_special_kills"],stats["ranged_special_kills"],
-            stats["ranged_trash_kills"],stats["horde_trash_kills"],
-            stats["boss_damage"],       stats["elite_damage"],
-            stats["horde_damage"],      stats["specialist_damage"],
-            stats["revives_done"],      stats["needed_revives"],
-            stats["ammo_used"],         stats["blitz_uses"],
-            stats["combat_ability_uses"],stats["damage_taken"],
-        ]
-        equip_row = [
-            stats.get("class",          TODO),
-            stats.get("melee_weapon",   TODO),
-            stats.get("ranged_weapon",  TODO),
-            stats.get("blitz",          TODO),
-            stats.get("aura",           TODO),
-            stats.get("combat_ability", TODO),
-            stats.get("keystones",      TODO),
-        ]
 
-        service.spreadsheets().values().batchUpdate(
+def _build_stats_row(stats):
+    return [
+        stats["date"],               stats["start_time"],
+        stats["melee_elite_kills"],  stats["ranged_elite_kills"],
+        stats["melee_special_kills"],stats["ranged_special_kills"],
+        stats["ranged_trash_kills"], stats["horde_trash_kills"],
+        stats["boss_damage"],        stats["elite_damage"],
+        stats["horde_damage"],       stats["specialist_damage"],
+        stats["revives_done"],       stats["needed_revives"],
+        stats["ammo_used"],          stats["blitz_uses"],
+        stats["combat_ability_uses"],stats["damage_taken"],
+    ]
+
+
+def _ensure_randoms_tab_exists(service):
+    """
+    Create the Randoms sheet tab in the spreadsheet if it doesn't exist yet.
+    Returns True if the tab was just created (so caller knows headers are needed).
+    """
+    meta = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+    existing = {s["properties"]["title"] for s in meta.get("sheets", [])}
+    if RANDOMS_TAB in existing:
+        return False
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=SPREADSHEET_ID,
+        body={"requests": [{"addSheet": {"properties": {"title": RANDOMS_TAB}}}]},
+    ).execute()
+    return True  # newly created — headers not yet written
+
+
+def ensure_randoms_tab_headers(service):
+    """
+    Create the Randoms tab if missing, then write header rows if the tab is empty.
+    Row 1: stats headers (Date, Time, kills, damage … Player Name at the end)
+    Row 2: equip headers (Class, Melee Weapon, …)
+    """
+    just_created = _ensure_randoms_tab_exists(service)
+    if not just_created:
+        # Tab already existed — check whether headers are already there
+        result = service.spreadsheets().values().get(
             spreadsheetId=SPREADSHEET_ID,
-            body={
-                "valueInputOption": "USER_ENTERED",
-                "data": [
-                    {"range": f"'{tab}'!A{row}",     "values": [stats_row]},
-                    {"range": f"'{tab}'!A{row + 1}", "values": [equip_row]},
-                ],
-            },
+            range=f"'{RANDOMS_TAB}'!A1",
         ).execute()
-        log_fn(f"  OK  {in_game} ({real_name}) -> '{tab}' rows {row}-{row+1}")
+        if result.get("values"):
+            return  # headers already present
+
+    stats_header = [
+        "Date", "Time",
+        "Melee Elite Kills", "Ranged Elite Kills",
+        "Melee Special Kills", "Ranged Special Kills",
+        "Ranged Trash Kills", "Horde Trash Kills",
+        "Boss Damage", "Elite Damage",
+        "Horde Damage", "Specialist Damage",
+        "Revives Done", "Needed Revives",
+        "Ammo Used", "Blitz Uses",
+        "Combat Ability Uses", "Damage Taken",
+        "Player Name",
+    ]
+    equip_header = [
+        "Class", "Melee Weapon", "Ranged Weapon",
+        "Blitz", "Aura", "Combat Ability", "Keystone(s)",
+    ]
+    service.spreadsheets().values().batchUpdate(
+        spreadsheetId=SPREADSHEET_ID,
+        body={
+            "valueInputOption": "USER_ENTERED",
+            "data": [
+                {"range": f"'{RANDOMS_TAB}'!A1", "values": [stats_header]},
+                {"range": f"'{RANDOMS_TAB}'!A2", "values": [equip_header]},
+            ],
+        },
+    ).execute()
+
+
+def upload_to_sheets(report, player_map, log_fn):
+    """
+    Upload report to Sheets.  player_map = {in_game_name: real_name}.
+
+    Routing rules:
+      • real_name is in PLAYER_TABS  → upload to that player's own tab (existing behaviour)
+      • real_name is NOT in PLAYER_TABS (unknown / empty mapping) → upload to RANDOMS_TAB
+        Multiple randoms from the same session each get their own row-pair;
+        the player's display name is appended as the last column of the stats row
+        so the Apps Script can match them to a run by date+time+name.
+    """
+    if not SPREADSHEET_ID:
+        raise RuntimeError(
+            "GOOGLE_SHEET_ID is not set. Add it to your .env file."
+        )
+
+    service = get_sheets_service()
+    randoms_headers_ensured = False
+
+    for in_game, stats in report.items():
+        real_name  = player_map.get(in_game, "").strip()
+        tab        = PLAYER_TABS.get(real_name) if real_name else None
+
+        if tab:
+            # ── Named player ────────────────────────────────────────────────
+            row = get_next_stats_row(service, tab)
+            service.spreadsheets().values().batchUpdate(
+                spreadsheetId=SPREADSHEET_ID,
+                body={
+                    "valueInputOption": "USER_ENTERED",
+                    "data": [
+                        {"range": f"'{tab}'!A{row}",     "values": [_build_stats_row(stats)]},
+                        {"range": f"'{tab}'!A{row + 1}", "values": [_build_equip_row(stats)]},
+                    ],
+                },
+            ).execute()
+            log_fn(f"  OK  {in_game} ({real_name}) -> '{tab}' rows {row}-{row+1}")
+
+        else:
+            # ── Random player ────────────────────────────────────────────────
+            # Use the real_name if the user typed something that just isn't a
+            # known player; otherwise fall back to the in-game name.
+            display_name = real_name if real_name else in_game
+
+            if not randoms_headers_ensured:
+                ensure_randoms_tab_headers(service)
+                randoms_headers_ensured = True
+
+            row = get_next_stats_row(service, RANDOMS_TAB)
+
+            # Stats row for Randoms has player display name appended at the end
+            randoms_stats_row = _build_stats_row(stats) + [display_name]
+
+            service.spreadsheets().values().batchUpdate(
+                spreadsheetId=SPREADSHEET_ID,
+                body={
+                    "valueInputOption": "USER_ENTERED",
+                    "data": [
+                        {"range": f"'{RANDOMS_TAB}'!A{row}",     "values": [randoms_stats_row]},
+                        {"range": f"'{RANDOMS_TAB}'!A{row + 1}", "values": [_build_equip_row(stats)]},
+                    ],
+                },
+            ).execute()
+            log_fn(f"  OK  {in_game} ({display_name!r}) -> '{RANDOMS_TAB}' rows {row}-{row+1} [random]")
 
 
 # ── GUI ────────────────────────────────────────────────────────────────────
@@ -360,7 +506,7 @@ class App(tk.Tk):
 
         ttk.Label(
             map_frame,
-            text="Real names must exactly match a tab: Steven, Injea, Lee, Blitter",
+            text="Known names: Steven, Injea, Lee, Blitter  |  Anyone else → Randoms tab",
             foreground="gray"
         ).grid(row=5, column=0, columnspan=2, padx=8, pady=(0, 6))
 

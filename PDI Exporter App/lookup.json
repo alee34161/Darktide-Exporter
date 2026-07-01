@@ -5,9 +5,10 @@
         "veteran":  "Veteran",
         "zealot":   "Zealot",
         "psyker":   "Psyker",
-        "orgyn":    "Ogryn",
+        "ogryn":    "Ogryn",
         "adamant":  "Arbitrator",
-        "broker":   "Hive Scum"
+        "broker":   "Hive Scum",
+        "cryptic":  "Skitarii"
     },
 
     "weapons": {
@@ -28,7 +29,21 @@
         "plasmagun_p1_m1": "Plasma Gun",
         "boltpistol_p1_m1": "Bolt Pistol",
         "shotgun_p1_m1": "Combat Shotgun",
-        "powermaul_shield_p1_m1": "Shock Maul and Suppression Shield"
+        "powermaul_shield_p1_m1": "Shock Maul and Suppression Shield",
+        "lasgun_p2_m3": "Helbore Lasgun",
+        "flamer_p1_m1": "Purgation Flamer",
+        "powermaul_p3_m1": "Arc Maul",
+        "galvanic_rifle_p1_m1": "Galvanic Rifle",
+        "phosphor_pistol_p1_m1": "Phosphor Blast Pistol",
+        "ogryn_powermaul_p1_m1": "Power Maul",
+        "ogryn_rippergun_p1_m1": "Ripper Gun",
+        "ogryn_rippergun_p1_m2": "Ripper Gun"
+    },
+
+    "defaults": {
+        "aura": "cryptic_coherency_regen_aura",
+        "blitz": "cryptic_servo_skull_order",
+        "combat_ability": "cryptic_discharge_base"
     },
 
     "blitz": {
@@ -39,7 +54,11 @@
         "broker_blitz_missile_launcher":  "Boom Bringer",
         "psyker_brain_burst_improved":    "Brain Rupture",
         "veteran_grenade_apply_bleed":    "Shredder Frag Grenade",
-        "adamant_shock_mine":           "Voltaic Shock Mine"
+        "adamant_shock_mine":           "Voltaic Shock Mine",
+        "zealot_flame_grenade":     "Immolation Grenade",
+        "cryptic_servo_skull_improved":  "Artificer Servo-Skull",
+        "ogryn_grenade_friend_rock":    "Big Friendly Rock",
+        "cryptic_servo_skull_order":    "Base Blitz"
     },
 
     "aura": {
@@ -49,7 +68,10 @@
         "zealot_corruption_healing_coherency_improved":  "Beacon of Purity",
         "zealot_toughness_damage_reduction_coherency_improved": "Benediction",
         "broker_aura_gunslinger_improved":                "Gunslinger Improved",
-        "adamant_damage_vs_staggered_aura":             "Breaking Dissent"
+        "adamant_damage_vs_staggered_aura":             "Breaking Dissent",
+        "cryptic_aura_weapon_improved":             "Foe-Render Creed",
+        "ogryn_melee_damage_coherency_improved":    "Bonebreaker's Aura",
+        "cryptic_coherency_regen_aura": "Base Aura"
 
     },
 
@@ -61,7 +83,13 @@
         "psyker_combat_ability_force_field":                                  "Telekine Shield",
         "broker_ability_focus_improved":                                       "Desperado",
         "zealot_stealth": "Shroudfield",
-        "adamant_charge": "Break the Line"
+        "adamant_charge": "Break the Line",
+        "veteran_big_game_hunter":                  "Executioner's Stance",
+        "cryptic_precision_stance": "Advanced Combat Doctrines",
+        "cryptic_discharge_base":   "Base Combat Ability",
+        "ogryn_taunt_shout":    "Loyal Protector",
+        "cryptic_chordclaw":    "Chordclaw Strike"
+
     },
 
     "keystones": {
@@ -72,6 +100,10 @@
         "adamant_companion_focus_elite": "Unleashed Brutality",
         "psyker_increased_max_souls": "Warp Siphon",
         "broker_keystone_vultures_mark_on_kill": "Vulture's Mark",
-        "adamant_disable_companion": "Lone Wolf"
+        "adamant_disable_companion": "Lone Wolf",
+        "veteran_snipers_focus":    "Marksman's Focus",
+        "cryptic_overload_keystone":    "Power Overload",
+        "cryptic_redline":  "Redline Capacitors",
+        "ogryn_passive_heavy_hitter":   "Heavy Hitter"
     }
 }

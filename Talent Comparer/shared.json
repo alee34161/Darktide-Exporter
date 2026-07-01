@@ -1,0 +1,19 @@
+{
+  "cryptic_aura_weapon_improved": "1 (number)",
+  "cryptic_coherency_regen_aura": "1 (number)",
+  "cryptic_crits_grant_tdr": "1 (number)",
+  "cryptic_damage_on_ability": "1 (number)",
+  "cryptic_discharge_base": "1 (number)",
+  "cryptic_elite_kills_toughness": "1 (number)",
+  "cryptic_increased_passive_cooldown_regen": "1 (number)",
+  "cryptic_melee_attacks_give_melee_attack_speed": "1 (number)",
+  "cryptic_passive_cooldown_regen": "1 (number)",
+  "cryptic_servo_skull_improved": "1 (number)",
+  "cryptic_servo_skull_order": "1 (number)",
+  "cryptic_stacking_melee_damage": "1 (number)",
+  "cryptic_stacking_tdr": "1 (number)",
+  "cryptic_stamina_increases_damage": "1 (number)",
+  "cryptic_tdr_based_on_charge": "1 (number)",
+  "cryptic_toughness_per_charge": "1 (number)",
+  "cryptic_weakspot_kills_restore_toughness": "1 (number)"
+}
