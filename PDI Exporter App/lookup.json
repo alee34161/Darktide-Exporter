@@ -11,6 +11,13 @@
         "cryptic":  "Skitarii"
     },
 
+    "havoc_mutators": {
+        "mutator_havoc_armored_infected":   "Moebian 21st",
+        "mutator_havoc_rotten_armor":   "Rotten Armor",
+        "mutator_increased_difficulty": "Emperor's Fading Light I",
+        "mutator_highest_difficulty":   "Emperor's Fading Light II"
+    },
+
     "weapons": {
         "powersword_p1_*":  "Power Sword",
         "powersword_p2_*": "Power Falchion",
@@ -53,7 +60,9 @@
         "combatknife_p1_*": "Combat Knife",
         "saw_p1*": "Bone Saw",
         "shotgun_p2*": "Double-Barrelled Shotgun",
-        "autogun_p1*": "Infantry Autogun"
+        "autogun_p1*": "Infantry Autogun",
+        "ogryn_hammer_2h_p1*": "Cruncher",
+        "shotgun_p3*": "Huntsman's Shotgun"
     },
 
     "defaults": {
@@ -76,7 +85,8 @@
         "ogryn_grenade_friend_rock":    "Big Friendly Rock",
         "cryptic_servo_skull_order":    "Base Blitz",
         "zealot_improved_stun_grenade": "Stunstorm Grenade",
-        "broker_blitz_tox_grenade":     "Chem Grenade"
+        "broker_blitz_tox_grenade":     "Chem Grenade",
+        "ogryn_box_explodes":           "Bombs Away!"
     },
 
     "aura": {

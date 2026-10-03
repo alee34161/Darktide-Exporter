@@ -1,14 +1,14 @@
 """
-Darktide Power_DI -> Google Sheets Uploader
-============================================
-Reads pdi_export.json written by the PDI_Exporter Darktide mod
-and uploads stats to Google Sheets.
+Darktide stats -> Google Sheets uploader
+========================================
+Reads a pdi_*.json export written by the DT_Exporter Darktide mod and
+uploads it to Google Sheets.
 
-The JSON file is automatically written to:
-  %appdata%\\Fatshark\\Darktide\\pdi_export.json
-after each mission (when the PDI_Exporter mod is installed).
+The mod writes exports to:
+  <Darktide install>\\binaries\\dump\\pdi_YYYY-MM-DD_HH-MM-SS.json
+when you leave a mission, or when /dt_export is used.
 
-Run with:  python app_json.py
+Run with:  python app.py
 """
 
 import tkinter as tk
@@ -19,7 +19,6 @@ import re
 import json
 import fnmatch
 from pathlib import Path
-from datetime import datetime
 
 try:
     from dotenv import load_dotenv
@@ -38,21 +37,18 @@ PLAYER_TABS = {
     "Blitter": "Blitter Data",
 }
 
-# Players whose names are NOT in PLAYER_TABS get routed here.
-# Multiple randoms from the same session are all stored in this single tab,
-# each as their own stats+equip row pair, with their name appended at the end
-# of the stats row so the Apps Script can identify them per run.
+# Anyone not in PLAYER_TABS; their name is the last column of the stats row.
 RANDOMS_TAB = os.environ.get("RANDOMS_TAB_NAME", "Randoms")
 
-# One row per Havoc mission (per report, not per player). Keyed by date+time.
+# One row per Havoc mission, keyed by date + time.
 HAVOC_TAB = os.environ.get("HAVOC_TAB_NAME", "Havoc")
 
 TODO = "N/A"
 
 # ── Lookup table ───────────────────────────────────────────────────────────
 
+# Load lookup.json from this script's folder ({} if missing or invalid).
 def load_lookup():
-    """Load lookup.json from same directory as this script. Returns dict."""
     path = Path(__file__).parent / "lookup.json"
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -65,45 +61,24 @@ def load_lookup():
 
 _LOOKUP = load_lookup()
 
-# Talent categories resolved by which section a key lives in
+# lookup.json sections that identify talent categories.
 _TALENT_CATEGORIES = ("blitz", "aura", "combat_ability", "keystones")
 
+# Display name for a key: exact match, then wildcard pattern, else the raw key.
 def lookup(section, key):
-    """
-    Return display name for key in section, or key itself as fallback.
-
-    Match order:
-      1. Exact key match  (fastest, no ambiguity)
-      2. Wildcard pattern match using fnmatch  (e.g. "laspistol_p1_*")
-         Patterns are tried in the order they appear in the JSON section.
-         The first matching pattern wins.
-      3. Fall back to the raw key if nothing matched.
-    """
     if not key or key == TODO:
         return TODO
     section_data = _LOOKUP.get(section, {})
-    # 1. Exact match
     val = section_data.get(key, "")
     if val:
         return val
-    # 2. Wildcard patterns — only keys that contain * or ? are tried
     for pattern, display in section_data.items():
         if ("*" in pattern or "?" in pattern) and fnmatch.fnmatch(key, pattern):
             return display if display else key
-    # 3. Raw key fallback
     return key
 
+# Talent keys listed under lookup.json "defaults" for a category.
 def _default_keys_for(cat):
-    """
-    Return the set of talent keys that count as "default" for a category,
-    per lookup.json's top-level "defaults" section, e.g.:
-        "defaults": {
-            "blitz": "default_blitz_key",
-            "aura": ["default_aura_key_a", "default_aura_key_b"],
-            "combat_ability": "default_combat_ability_key"
-        }
-    A category can map to a single key (string) or multiple (list).
-    """
     raw = _LOOKUP.get("defaults", {}).get(cat)
     if not raw:
         return set()
@@ -111,20 +86,8 @@ def _default_keys_for(cat):
         return {raw}
     return set(raw)
 
+# Pick blitz/aura/combat ability (non-default wins over default) and all keystones.
 def resolve_talents(talents_selected):
-    """
-    Given a dict of {talent_key: 1} from the exporter, search lookup.json
-    sections to find blitz, aura, combat_ability, and keystone(s).
-
-    A player can have multiple talents in the same category (e.g. an aura
-    granted by a curio in addition to their selected aura). Only ONE should
-    be reported: the non-default one if present, otherwise the default.
-    Keystones still combine all matches (a player can run more than one).
-
-    Returns a dict with those four keys filled in (display name or raw key
-    as fallback, TODO if none found).
-    """
-    # Each entry is (display_name, raw_key) so we can tell defaults apart
     result = {cat: [] for cat in _TALENT_CATEGORIES}
     for talent_key in talents_selected:
         for cat in _TALENT_CATEGORIES:
@@ -132,10 +95,10 @@ def resolve_talents(talents_selected):
             if talent_key in section and talent_key != "_comment":
                 display = section[talent_key]
                 result[cat].append((display if display else talent_key, talent_key))
-                break  # a key only belongs to one category
+                break
 
+    # Non-default match if any, else the default, else N/A.
     def pick_single(cat):
-        """Prefer a non-default match; fall back to a default; else TODO."""
         matches = result[cat]
         if not matches:
             return TODO
@@ -143,7 +106,6 @@ def resolve_talents(talents_selected):
         non_default = [display for display, raw_key in matches if raw_key not in defaults]
         if non_default:
             return non_default[0]
-        # Nothing but defaults matched (or no defaults configured at all)
         return matches[0][0]
 
     keystone_displays = [display for display, _raw_key in result["keystones"]]
@@ -155,7 +117,7 @@ def resolve_talents(talents_selected):
         "keystones":      "/".join(keystone_displays) if keystone_displays else TODO,
     }
 
-# PDI_Exporter writes via DMF:dtf to DARKTIDE\binaries\dump\
+# Darktide's binaries\dump folder, from the Steam install path if available.
 def _find_dump_dir():
     try:
         import winreg
@@ -171,17 +133,17 @@ DEFAULT_JSON_DIR = _find_dump_dir()
 DISPLAY_FIELDS = [
     ("date",                 "Date"),
     ("start_time",           "Start Time"),
-    ("melee_elite_kills",    "Melee Elite Kills"),
-    ("ranged_elite_kills",   "Ranged Elite Kills"),
-    ("melee_special_kills",  "Melee Special Kills"),
-    ("ranged_special_kills", "Ranged Special Kills"),
-    ("ranged_trash_kills",   "Ranged Trash Kills"),
-    ("horde_trash_kills",    "Horde Trash Kills"),
+    ("melee_elite_kills",    "Melee Elites"),
+    ("ranged_elite_kills",   "Ranged Elites"),
+    ("melee_special_kills",  "Melee Specials"),
+    ("ranged_special_kills", "Ranged Specials"),
+    ("ranged_trash_kills",   "Ranged Trash"),
+    ("horde_trash_kills",    "Horde Trash"),
     ("boss_damage",          "Boss Damage"),
     ("elite_damage",         "Elite Damage"),
     ("horde_damage",         "Horde Damage"),
     ("specialist_damage",    "Specialist Damage"),
-    ("revives_done",         "Revives Done"),
+    ("revives_done",         "Revives"),
     ("needed_revives",       "Needed Revives"),
     ("ammo_used",            "Ammo Used"),
     ("blitz_uses",           "Blitz Uses"),
@@ -198,8 +160,8 @@ DISPLAY_FIELDS = [
 
 # ── JSON reader ────────────────────────────────────────────────────────────
 
+# Strip DMF:dtf type suffixes: '123 (number)' -> 123, 'foo (string)' -> 'foo'.
 def strip_dmf(value):
-    """Strip DMF:dtf type suffixes: '123 (number)' -> 123, 'foo (string)' -> 'foo'."""
     if isinstance(value, str):
         for suffix in (" (number)", " (string)", " (boolean)"):
             if value.endswith(suffix):
@@ -214,29 +176,23 @@ def strip_dmf(value):
     return value
 
 
+# Read a pdi_*.json export. Returns (report, errors, run_info).
 def read_export_json(path):
-    """
-    Read a pdi_*.json file written by PDI_Exporter via DMF:dtf.
-    DMF:dtf wraps the table in a top-level key (the filename) and appends
-    type suffixes like ' (number)' to all values.
-    Returns (report, errors) where report is {in_game_name: {field: value}}.
-    """
     errors = []
     try:
         with open(path, "rb") as f:
             raw = f.read().decode("utf-8")
-        # DMF:dtf embeds literal \r inside string values (from dev_description
-        # fields in weapon data). Fix bare \r before JSON parsing.
         raw = re.sub(r'\r(?!\n)', r'\\r', raw)
         raw = raw.replace('\r\n', '\n')
         data = json.loads(raw)
     except FileNotFoundError:
-        return None, [f"File not found: {path}\n\nMake sure the PDI_Exporter mod is installed "
-                      "and you have completed at least one mission."]
+        return None, [f"File not found: {path}\n\nMake sure the DT_Exporter mod is installed "
+                      "and you have completed at least one mission."], None
+    except (OSError, UnicodeDecodeError) as e:
+        return None, [f"Could not read {path}: {e}\n\nSelect a pdi_*.json file, not a folder."], None
     except json.JSONDecodeError as e:
-        return None, [f"Could not parse JSON file: {e}"]
+        return None, [f"Could not parse JSON file: {e}"], None
 
-    # DMF:dtf wraps everything in a top-level key matching the filename
     data = next(iter(data.values())) if len(data) == 1 else data
 
     def get_int(d, key):
@@ -251,7 +207,7 @@ def read_export_json(path):
     players_data = data.get("players", {})
 
     if not players_data:
-        return None, ["No player data found in export file."]
+        return None, ["No player data found in export file."], None
 
     equipment_data = data.get("equipment", {})
 
@@ -265,7 +221,6 @@ def read_export_json(path):
         raw_melee  = str(strip_dmf(equip.get("melee_weapon", TODO)))
         raw_ranged = str(strip_dmf(equip.get("ranged_weapon",TODO)))
 
-        # Resolve blitz/aura/combat_ability/keystones from the full talent list
         talents_selected = equip.get("talents_selected", {})
         talent_fields = resolve_talents(talents_selected)
 
@@ -288,7 +243,6 @@ def read_export_json(path):
             "blitz_uses":           get_int(stats, "blitz_uses"),
             "combat_ability_uses":  get_int(stats, "combat_ability_uses"),
             "damage_taken":         get_int(stats, "damage_taken"),
-            # Equipment — class/weapons via lookup.json, talents resolved by section
             "class":          lookup("archetypes", raw_class),
             "melee_weapon":   lookup("weapons",    raw_melee),
             "ranged_weapon":  lookup("weapons",    raw_ranged),
@@ -301,11 +255,8 @@ def read_export_json(path):
     return report, errors, run_info
 
 
+# Items of a Lua array, whether DMF:dtf wrote it as a list or a "1","2" object.
 def _dtf_list(value):
-    """
-    DMF:dtf may write a Lua array as a JSON list or as an object keyed
-    "1", "2", ... Return the items in order either way.
-    """
     if isinstance(value, list):
         return value
     if isinstance(value, dict):
@@ -318,12 +269,8 @@ def _dtf_list(value):
     return []
 
 
+# Havoc row for this run (rank and mutators), or None for non-Havoc missions.
 def _parse_havoc(havoc, session_date, session_time):
-    """
-    Turn the export's havoc block into one per-run row, or None for
-    non-Havoc missions. Names go through lookup.json sections
-    "havoc_mutators" / "havoc_modifiers" (raw key if no entry).
-    """
     if not isinstance(havoc, dict):
         return None
     rank = strip_dmf(havoc.get("rank"))
@@ -334,25 +281,17 @@ def _parse_havoc(havoc, session_date, session_time):
         lookup("havoc_mutators", str(strip_dmf(c)))
         for c in _dtf_list(havoc.get("circumstances"))
     ]
-    modifiers = []
-    for m in _dtf_list(havoc.get("modifiers")):
-        if not isinstance(m, dict):
-            continue
-        name  = lookup("havoc_modifiers", str(strip_dmf(m.get("name", ""))))
-        level = strip_dmf(m.get("level", ""))
-        modifiers.append(f"{name} L{level}" if level != "" else name)
-
     return {
         "date":       session_date,
         "start_time": session_time,
         "rank":       rank,
         "mutators":   ", ".join(mutators),
-        "modifiers":  ", ".join(modifiers),
     }
 
 
 # ── Google Sheets ──────────────────────────────────────────────────────────
 
+# Google Sheets client from the service account in .env.
 def get_sheets_service():
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
@@ -382,6 +321,7 @@ def get_sheets_service():
     return build("sheets", "v4", credentials=creds, cache_discovery=False)
 
 
+# Next free stats row; stats rows are kept on even row numbers.
 def get_next_stats_row(service, tab_name):
     result = service.spreadsheets().values().get(
         spreadsheetId=SPREADSHEET_ID,
@@ -394,6 +334,7 @@ def get_next_stats_row(service, tab_name):
     return next_row + 1 if next_row % 2 != 0 else next_row
 
 
+# Equipment row: class, weapons, blitz, aura, ability, keystones.
 def _build_equip_row(stats):
     return [
         stats.get("class",          TODO),
@@ -406,6 +347,7 @@ def _build_equip_row(stats):
     ]
 
 
+# Stats row in the data tabs' column order.
 def _build_stats_row(stats):
     return [
         stats["date"],               stats["start_time"],
@@ -420,87 +362,53 @@ def _build_stats_row(stats):
     ]
 
 
-def _ensure_randoms_tab_exists(service):
-    """
-    Create the Randoms sheet tab in the spreadsheet if it doesn't exist yet.
-    Returns True if the tab was just created (so caller knows headers are needed).
-    """
+# Create a tab if missing, writing `header` to row 1 if given.
+def _ensure_tab(service, title, header=None):
     meta = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
-    existing = {s["properties"]["title"] for s in meta.get("sheets", [])}
-    if RANDOMS_TAB in existing:
-        return False
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=SPREADSHEET_ID,
-        body={"requests": [{"addSheet": {"properties": {"title": RANDOMS_TAB}}}]},
-    ).execute()
-    return True  # newly created — headers not yet written
-
-
-def ensure_randoms_tab_headers(service):
-    """
-    Create the Randoms tab if missing, then write header rows if the tab is empty.
-    Row 1: stats headers (Date, Time, kills, damage … Player Name at the end)
-    Row 2: equip headers (Class, Melee Weapon, …)
-    """
-    just_created = _ensure_randoms_tab_exists(service)
-    if not just_created:
-        # Tab already existed — check whether headers are already there
-        result = service.spreadsheets().values().get(
-            spreadsheetId=SPREADSHEET_ID,
-            range=f"'{RANDOMS_TAB}'!A1",
-        ).execute()
-        if result.get("values"):
-            return  # headers already present
-
-    stats_header = [
-        "Date", "Time",
-        "Melee Elite Kills", "Ranged Elite Kills",
-        "Melee Special Kills", "Ranged Special Kills",
-        "Ranged Trash Kills", "Horde Trash Kills",
-        "Boss Damage", "Elite Damage",
-        "Horde Damage", "Specialist Damage",
-        "Revives Done", "Needed Revives",
-        "Ammo Used", "Blitz Uses",
-        "Combat Ability Uses", "Damage Taken",
-        "Player Name",
-    ]
-    equip_header = [
-        "Class", "Melee Weapon", "Ranged Weapon",
-        "Blitz", "Aura", "Combat Ability", "Keystone(s)",
-    ]
-    service.spreadsheets().values().batchUpdate(
-        spreadsheetId=SPREADSHEET_ID,
-        body={
-            "valueInputOption": "USER_ENTERED",
-            "data": [
-                {"range": f"'{RANDOMS_TAB}'!A1", "values": [stats_header]},
-                {"range": f"'{RANDOMS_TAB}'!A2", "values": [equip_header]},
-            ],
-        },
-    ).execute()
-
-
-def _ensure_havoc_tab(service):
-    """Create the Havoc tab with a header row if it doesn't exist yet."""
-    meta = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
-    existing = {s["properties"]["title"] for s in meta.get("sheets", [])}
-    if HAVOC_TAB in existing:
+    if title in {sh["properties"]["title"] for sh in meta.get("sheets", [])}:
         return
     service.spreadsheets().batchUpdate(
         spreadsheetId=SPREADSHEET_ID,
-        body={"requests": [{"addSheet": {"properties": {"title": HAVOC_TAB}}}]},
+        body={"requests": [{"addSheet": {"properties": {"title": title}}}]},
     ).execute()
+    if header:
+        service.spreadsheets().values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=f"'{title}'!A1",
+            valueInputOption="USER_ENTERED",
+            body={"values": [header]},
+        ).execute()
+
+
+# Randoms header: the data tabs' columns plus "Player Name".
+RANDOMS_HEADER = [
+    "Date", "Start Time",
+    "Melee Elites", "Ranged Elites",
+    "Melee Specials", "Ranged Specials",
+    "Ranged Trash", "Horde Trash",
+    "Boss Damage", "Elite Damage",
+    "Horde Damage", "Specialist Damage",
+    "Revives", "Needed Revives",
+    "Ammo Used", "Blitz Uses",
+    "Combat Ability Uses", "Damage Taken",
+    "Player Name",
+]
+
+
+# Create the Randoms tab if missing and (re)write its standard header row.
+def ensure_randoms_tab_headers(service):
+    _ensure_tab(service, RANDOMS_TAB)
     service.spreadsheets().values().update(
         spreadsheetId=SPREADSHEET_ID,
-        range=f"'{HAVOC_TAB}'!A1",
+        range=f"'{RANDOMS_TAB}'!A1",
         valueInputOption="USER_ENTERED",
-        body={"values": [["Date", "Time", "Havoc Rank", "Mutators", "Modifiers"]]},
+        body={"values": [RANDOMS_HEADER]},
     ).execute()
 
 
+# Append this run's Havoc row.
 def upload_havoc(service, run_info, log_fn):
-    """Append one row for this run to the Havoc tab."""
-    _ensure_havoc_tab(service)
+    _ensure_tab(service, HAVOC_TAB, ["Date", "Start Time", "Havoc Rank", "Mutators"])
     result = service.spreadsheets().values().get(
         spreadsheetId=SPREADSHEET_ID, range=f"'{HAVOC_TAB}'!A:A"
     ).execute()
@@ -511,23 +419,14 @@ def upload_havoc(service, run_info, log_fn):
         valueInputOption="USER_ENTERED",
         body={"values": [[
             run_info["date"], run_info["start_time"], run_info["rank"],
-            run_info["mutators"], run_info["modifiers"],
+            run_info["mutators"],
         ]]},
     ).execute()
     log_fn(f"  OK  Havoc rank {run_info['rank']} -> '{HAVOC_TAB}' row {row}")
 
 
+# Upload each player to their tab (unknown names go to Randoms), then the Havoc row.
 def upload_to_sheets(report, player_map, log_fn, run_info=None):
-    """
-    Upload report to Sheets.  player_map = {in_game_name: real_name}.
-
-    Routing rules:
-      • real_name is in PLAYER_TABS  → upload to that player's own tab (existing behaviour)
-      • real_name is NOT in PLAYER_TABS (unknown / empty mapping) → upload to RANDOMS_TAB
-        Multiple randoms from the same session each get their own row-pair;
-        the player's display name is appended as the last column of the stats row
-        so the Apps Script can match them to a run by date+time+name.
-    """
     if not SPREADSHEET_ID:
         raise RuntimeError(
             "GOOGLE_SHEET_ID is not set. Add it to your .env file."
@@ -537,11 +436,13 @@ def upload_to_sheets(report, player_map, log_fn, run_info=None):
     randoms_headers_ensured = False
 
     for in_game, stats in report.items():
-        real_name  = player_map.get(in_game, "").strip()
-        tab        = PLAYER_TABS.get(real_name) if real_name else None
+        real_name = player_map.get(in_game, "").strip()
+        known     = next((k for k in PLAYER_TABS if k.lower() == real_name.lower()), None)
+        if known:
+            real_name = known
+        tab       = PLAYER_TABS.get(known) if known else None
 
         if tab:
-            # ── Named player ────────────────────────────────────────────────
             row = get_next_stats_row(service, tab)
             service.spreadsheets().values().batchUpdate(
                 spreadsheetId=SPREADSHEET_ID,
@@ -556,9 +457,6 @@ def upload_to_sheets(report, player_map, log_fn, run_info=None):
             log_fn(f"  OK  {in_game} ({real_name}) -> '{tab}' rows {row}-{row+1}")
 
         else:
-            # ── Random player ────────────────────────────────────────────────
-            # Use the real_name if the user typed something that just isn't a
-            # known player; otherwise fall back to the in-game name.
             display_name = real_name if real_name else in_game
 
             if not randoms_headers_ensured:
@@ -567,7 +465,6 @@ def upload_to_sheets(report, player_map, log_fn, run_info=None):
 
             row = get_next_stats_row(service, RANDOMS_TAB)
 
-            # Stats row for Randoms has player display name appended at the end
             randoms_stats_row = _build_stats_row(stats) + [display_name]
 
             service.spreadsheets().values().batchUpdate(
@@ -582,7 +479,6 @@ def upload_to_sheets(report, player_map, log_fn, run_info=None):
             ).execute()
             log_fn(f"  OK  {in_game} ({display_name!r}) -> '{RANDOMS_TAB}' rows {row}-{row+1} [random]")
 
-    # Per-run Havoc data, written once regardless of which players were present
     if run_info:
         upload_havoc(service, run_info, log_fn)
 
@@ -595,13 +491,13 @@ class App(tk.Tk):
         self.title("Darktide PDI -> Google Sheets")
         self.resizable(False, False)
         self._report     = None
+        self._run_info   = None
         self._json_path  = tk.StringVar(value=str(DEFAULT_JSON_DIR))
         self._build_ui()
 
     def _build_ui(self):
         PAD = 10
 
-        # ── Player mapping ──
         map_frame = ttk.LabelFrame(
             self,
             text="Player Name Mapping  (in-game name  →  real name for Sheet tab)"
@@ -625,8 +521,7 @@ class App(tk.Tk):
             foreground="gray"
         ).grid(row=5, column=0, columnspan=2, padx=8, pady=(0, 6))
 
-        # ── JSON file path ──
-        path_frame = ttk.LabelFrame(self, text="Session Export File  (%appdata%/Fatshark/Darktide/pdi_exports/)")
+        path_frame = ttk.LabelFrame(self, text="Session Export File  (Darktide\\binaries\\dump\\pdi_*.json)")
         path_frame.grid(row=1, column=0, padx=PAD, pady=4, sticky="ew")
 
         ttk.Entry(path_frame, textvariable=self._json_path, width=55).grid(
@@ -634,7 +529,6 @@ class App(tk.Tk):
         ttk.Button(path_frame, text="Browse",
                    command=self._browse_json).grid(row=0, column=1, padx=4)
 
-        # ── Action buttons ──
         act_row = ttk.Frame(self)
         act_row.grid(row=2, column=0, padx=PAD, pady=4)
 
@@ -647,7 +541,6 @@ class App(tk.Tk):
         )
         self._btn_upload.grid(row=0, column=1, padx=6)
 
-        # ── Preview table ──
         tbl_frame = ttk.LabelFrame(self, text="Extracted Data Preview")
         tbl_frame.grid(row=3, column=0, padx=PAD, pady=4, sticky="ew")
 
@@ -667,7 +560,6 @@ class App(tk.Tk):
         self._tree.grid(row=0, column=0, sticky="nsew")
         vsb.grid(row=0, column=1, sticky="ns")
 
-        # ── Log ──
         log_frame = ttk.LabelFrame(self, text="Log")
         log_frame.grid(row=4, column=0, padx=PAD, pady=(4, PAD), sticky="ew")
 
@@ -717,6 +609,9 @@ class App(tk.Tk):
             self._log_msg(f"ERROR: {e}")
 
         if not report:
+            self._report = None
+            self._run_info = None
+            self._btn_upload.config(state="disabled")
             messagebox.showerror("Load failed", "\n".join(errors))
             return
 
@@ -727,14 +622,16 @@ class App(tk.Tk):
         self._populate_table(report)
         self._btn_upload.config(state="normal")
         self._log_msg(f"Loaded {len(report)} player(s): {', '.join(report.keys())}")
-        # Auto-fill in-game names from the JSON file
         self._autofill_player_names(report)
 
+    # Fill in-game names from the file; real names stay with their in-game name.
     def _autofill_player_names(self, report):
-        """Fill in-game name fields from the loaded JSON player names."""
+        previous = {ig.get().strip(): real.get().strip() for ig, real in self._player_vars}
         names = list(report.keys())
-        for i, (ig_var, _) in enumerate(self._player_vars):
-            ig_var.set(names[i] if i < len(names) else "")
+        for i, (ig_var, real_var) in enumerate(self._player_vars):
+            name = names[i] if i < len(names) else ""
+            ig_var.set(name)
+            real_var.set(previous.get(name, "") if name else "")
         self._log_msg(f"  Auto-filled player names: {', '.join(names)}")
 
     def _populate_table(self, report):
@@ -787,8 +684,7 @@ class App(tk.Tk):
 
         def run():
             try:
-                upload_to_sheets(self._report, player_map, self._log_msg,
-                                 getattr(self, "_run_info", None))
+                upload_to_sheets(self._report, player_map, self._log_msg, self._run_info)
                 self.after(0, self._on_upload_done)
             except Exception as e:
                 self._log_msg(f"Upload error: {e}")

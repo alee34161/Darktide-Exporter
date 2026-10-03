@@ -1,43 +1,6 @@
--- DT_Exporter
--- Standalone Darktide stat exporter. No Power_DI dependency.
--- Hooks the same game classes PDI uses directly, producing the same
--- JSON output format as the original PDI_Exporter.
+-- DT_Exporter: standalone Darktide stat exporter (no Power_DI dependency).
 
 local mod = get_mod("DT_Exporter")
-
--- ── JSON serialiser ────────────────────────────────────────────────────────
-
-local function tojson(v)
-    local t = type(v)
-    if t == "nil"     then return "null" end
-    if t == "boolean" then return tostring(v) end
-    if t == "number"  then return tostring(v) end
-    if t == "string"  then
-        v = v:gsub('\\','\\\\'):gsub('"','\\"'):gsub('\n','\\n'):gsub('\r','\\r')
-        return '"'..v..'"'
-    end
-    if t == "table" then
-        local n = #v
-        local is_arr = n > 0
-        if is_arr then
-            for k in pairs(v) do
-                if type(k) ~= "number" then is_arr = false; break end
-            end
-        end
-        if is_arr then
-            local parts = {}
-            for i = 1, n do parts[i] = tojson(v[i]) end
-            return "["..table.concat(parts,",").."]"
-        else
-            local parts = {}
-            for k, val in pairs(v) do
-                table.insert(parts, tojson(tostring(k))..":"..tojson(val))
-            end
-            return "{"..table.concat(parts,",").."}"
-        end
-    end
-    return "null"
-end
 
 -- ── File writing ───────────────────────────────────────────────────────────
 
@@ -57,10 +20,7 @@ local function save_json(data)
 end
 
 -- ── Unknown-enemy log ──────────────────────────────────────────────────────
--- One file per mission that had unrecognised enemies, written next to the
--- JSON exports in binaries/dump. The "zz_" prefix sorts these above the
--- pdi_ exports when the folder is sorted by name, newest first. Delete each
--- file once its enemies are added to the breed tables.
+-- Writes a zz_UNKNOWN_ENEMIES file to binaries/dump for unrecognised enemies.
 
 local function log_unknown_breeds(unknown, date_str, time_str)
     local now  = os.date("*t")
@@ -84,8 +44,7 @@ local function log_unknown_breeds(unknown, date_str, time_str)
 end
 
 -- ── UUID helper ────────────────────────────────────────────────────────────
--- Must match utilities.get_address / utilities.get_unit_uuid for game objects.
--- For non-level units (players, enemies) both PDI functions return this format.
+-- Unit memory address as a string key, in PDI's format.
 
 local function unit_uuid(unit)
     if not unit then return nil end
@@ -93,8 +52,7 @@ local function unit_uuid(unit)
 end
 
 -- ── Breed tables ───────────────────────────────────────────────────────────
--- Update these after patches that add new enemy types.
--- Source of truth: PDI minion_categories.lua
+-- Enemy categories. Add new enemies from zz_UNKNOWN_ENEMIES files here.
 
 local MELEE_ELITE = {
     chaos_ogryn_bulwark  = true,  -- Crusher
@@ -156,6 +114,7 @@ local BOSS = {
     renegade_captain          = true,
     renegade_twin_captain     = true,
     renegade_twin_captain_two = true,
+    renegade_wizard           = true,  -- Spillway boss
 }
 local function is_known_breed(b)
     return MELEE_ELITE[b] or RANGED_ELITE[b] or MELEE_SPEC[b] or RANGED_SPEC[b]
@@ -167,18 +126,18 @@ local LARGE_CLIP  = { large_clip=true }
 local SMALL_CLIP  = { small_clip=true }
 
 -- ── Session data ───────────────────────────────────────────────────────────
-
-local _spawns          = {}   -- [unit_uuid] = { unit_name, max_health }
-local _profiles        = {}   -- [unit_uuid] = { archetype, loadout, talents }
-local _attacks         = {}   -- array of attack event records
-local _abilities       = {}   -- array of ability charge change records
-local _interacts       = {}   -- array of interaction event records
-local _pstatus         = {}   -- array of { player_unit_uuid } — used to collect player UUIDs
-local _active_ixn      = {}   -- cache: interactee_game_object_id -> interactor_unit
-local _ability_charges = {}   -- cache: "ability_type_uuid" -> last known num_charges
-local _psyker_actions  = {}   -- cache: uuid -> last weapon action name (smite/chain-lightning)
+-- Live mission data. Events record names when they happen, because a dead
+-- unit's memory address can be reused by a new unit.
+local _spawns          = {}
+local _profiles        = {}
+local _attacks         = {}
+local _abilities       = {}
+local _interacts       = {}
+local _active_ixn      = {}
+local _ability_charges = {}
+local _psyker_actions  = {}
 local _start_time      = nil
-local _havoc           = nil   -- parsed Havoc data, nil for non-Havoc missions
+local _havoc           = nil
 
 local function reset_data()
     _spawns          = {}
@@ -186,7 +145,6 @@ local function reset_data()
     _attacks         = {}
     _abilities       = {}
     _interacts       = {}
-    _pstatus         = {}
     _active_ixn      = {}
     _ability_charges = {}
     _psyker_actions  = {}
@@ -194,38 +152,36 @@ local function reset_data()
     _havoc           = nil
 end
 
--- Snapshot of the last completed mission. reset_data() assigns fresh tables,
--- so the references held here survive the hub transition intact.
+-- Last mission's data, kept for /dt_export in the hub.
 local _last_mission = nil
 
 local function snapshot()
     return {
-        spawns     = _spawns,
         profiles   = _profiles,
         attacks    = _attacks,
         abilities  = _abilities,
         interacts  = _interacts,
-        pstatus    = _pstatus,
         start_time = _start_time,
         havoc      = _havoc,
     }
 end
 
-local function in_mission()
-    local ok, res = pcall(function()
+local function game_mode_name()
+    local ok, name = pcall(function()
         local gm = Managers.state.game_mode
-        return gm ~= nil and gm:game_mode_name() ~= "hub"
+        return gm and gm:game_mode_name()
     end)
-    return ok and res
+    return ok and name or nil
+end
+
+local function in_mission()
+    local mode = game_mode_name()
+    return mode ~= nil and mode ~= "hub"
 end
 
 -- ── Hooks ──────────────────────────────────────────────────────────────────
 
--- Talent values: pre-1.13.0 a plain tier number; 1.13.0+ a table
--- { tier = N, node_name = ..., target_slot = ... }. Normalise to the tier.
--- Havoc rank/theme/faction/circumstances/modifiers. Managers.state.difficulty
--- parses this on every client during gameplay init (see
--- game_mode_extension_havoc.lua). Returns nil outside Havoc missions.
+-- Havoc rank and mutators (circumstances); nil outside Havoc.
 local function capture_havoc()
     local ok, data = pcall(function()
         local diff = Managers.state.difficulty
@@ -236,21 +192,10 @@ local function capture_havoc()
     local circumstances = {}
     for i, c in ipairs(data.circumstances or {}) do circumstances[i] = tostring(c) end
 
-    local modifiers = {}
-    for i, m in ipairs(data.modifiers or {}) do
-        modifiers[i] = { name = tostring(m.name), level = tonumber(m.level) or 0 }
-    end
-
-    return {
-        rank          = data.havoc_rank,
-        theme         = data.theme,
-        faction       = data.faction,
-        mission       = data.mission,
-        circumstances = circumstances,
-        modifiers     = modifiers,
-    }
+    return { rank = data.havoc_rank, circumstances = circumstances }
 end
 
+-- Copies talents as { name = tier } (1.13.0 stores a table per talent).
 local function copy_talents(t)
     local out = {}
     if type(t) ~= "table" then return out end
@@ -266,8 +211,7 @@ local function copy_talents(t)
     return out
 end
 
--- No existence check here: many game classes load after this mod, and DMF
--- defers the hook until they exist. DMF prints its own error for real misses.
+-- Registers a hook; DMF defers it until the class loads.
 local function safe_hook(class_name, method_name, fn)
     local ok, err = pcall(function()
         mod:hook_safe(CLASS[class_name], method_name, fn)
@@ -277,12 +221,7 @@ local function safe_hook(class_name, method_name, fn)
     end
 end
 
--- 1. UnitSpawnerManager._add_network_unit
---    Mirrors PDI's add_network_unit exactly:
---    - Builds UUID→name map (breed names for enemies, display names for players)
---    - Captures max_health for accurate kill-damage formula
---    - Copies player profiles (archetype, loadout, talents) — PDI's PlayerProfiles
---      datasource has no hook_templates; it is populated inline here
+-- Unit spawns: names, max health, and player profiles.
 safe_hook("UnitSpawnerManager", "_add_network_unit",
     function(self, unit, game_object_id, is_husk)
         local uuid = unit_uuid(unit)
@@ -296,7 +235,7 @@ safe_hook("UnitSpawnerManager", "_add_network_unit",
             local template_name = self._unit_template_network_lookup
                 and self._unit_template_network_lookup[template_id]
 
-            local unit_name, max_health
+            local unit_name, max_health, is_player
 
             if template_name == "player_character" then
                 local peer_id  = go_field(gs, game_object_id, "owner_peer_id")
@@ -306,16 +245,14 @@ safe_hook("UnitSpawnerManager", "_add_network_unit",
                     local profile = player:profile()
                     if profile then
                         unit_name = profile.name
-                        _profiles[uuid] = {
+                        is_player = true
+                        _profiles[unit_name] = {
                             archetype = profile.archetype,
                             loadout   = profile.loadout,
-                            -- Copy now: the live talents table gets cleared
-                            -- later, so a reference would be empty at export.
                             talents   = copy_talents(profile.talents),
                         }
                     end
                 end
-                _pstatus[#_pstatus+1] = { player_unit_uuid = uuid }
 
             elseif has_go_field(gs, game_object_id, "breed_id") then
                 local breed_id = go_field(gs, game_object_id, "breed_id")
@@ -330,11 +267,14 @@ safe_hook("UnitSpawnerManager", "_add_network_unit",
                 max_health = go_field(gs, game_object_id, "health")
             end
 
-            _spawns[uuid] = { unit_name = unit_name, max_health = max_health }
+            _spawns[uuid] = { unit_name = unit_name, max_health = max_health, is_player = is_player }
+            _ability_charges["combat_ability_"..uuid]  = nil
+            _ability_charges["grenade_ability_"..uuid] = nil
+            _psyker_actions[uuid] = nil
 
             if not _start_time then
                 _start_time = os.time()
-                _havoc = capture_havoc()
+                _havoc      = capture_havoc()
             end
         end)
         if not ok then
@@ -343,44 +283,38 @@ safe_hook("UnitSpawnerManager", "_add_network_unit",
     end
 )
 
--- 2. AttackReportManager.add_attack_result
---    Mirrors PDI's add_attack_result: captures attacked_unit_damage_taken
---    from the health extension so the kill-damage formula is accurate.
+-- Hits: damage, kills, and damage taken.
 safe_hook("AttackReportManager", "add_attack_result",
     function(self, damage_profile, attacked_unit, attacking_unit, _dir, _pos,
-             hit_weakspot, damage, attack_result, attack_type, _eff, is_crit)
-        local health_ext = attacked_unit
-            and ScriptUnit.has_extension(attacked_unit, "health_system")
-        _attacks[#_attacks+1] = {
-            damage_profile_name       = damage_profile and damage_profile.name,
-            attacking_unit_uuid       = unit_uuid(attacking_unit),
-            attacked_unit_uuid        = unit_uuid(attacked_unit),
-            attacked_unit_damage_taken = health_ext and health_ext:damage_taken() or 0,
-            hit_weakspot              = hit_weakspot or false,
-            damage                    = damage or 0,
-            attack_result             = attack_result,
-            attack_type               = attack_type,
-            is_critical_strike        = is_crit or false,
-        }
+             hit_weakspot, damage, attack_result)
+        local ok, err = pcall(function()
+            local att = _spawns[unit_uuid(attacking_unit)]
+            local def = _spawns[unit_uuid(attacked_unit)]
+            local health_ext = attacked_unit
+                and ScriptUnit.has_extension(attacked_unit, "health_system")
+            _attacks[#_attacks+1] = {
+                attacker_name     = att and att.unit_name,
+                attacker_known    = att ~= nil,
+                attacker_player   = att and att.is_player or false,
+                defender_name     = def and def.unit_name,
+                defender_player   = def and def.is_player or false,
+                defender_max_hp   = def and def.max_health,
+                defender_dmg_taken = health_ext and health_ext:damage_taken() or 0,
+                damage            = damage or 0,
+                killed            = attack_result == "died",
+            }
+        end)
+        if not ok then
+            mod:echo("DT Exporter: add_attack_result error: "..tostring(err))
+        end
     end
 )
 
--- 3. InteracteeSystem — revives, rescues, pickups
+-- Completed interactions: revives, rescues, ammo pickups.
 safe_hook("InteracteeSystem", "rpc_interaction_started",
     function(self, channel_id, unit_id, is_level_unit, interactor_go_id)
         local ok, err = pcall(function()
-            local us         = Managers.state.unit_spawner
-            local interactor = us:unit(interactor_go_id, false)
-            local interactee = us:unit(unit_id, is_level_unit)
-            local ext        = self._unit_to_extension_map
-                and self._unit_to_extension_map[interactee]
-            _active_ixn[unit_id] = interactor
-            _interacts[#_interacts+1] = {
-                event                = "interaction_started",
-                interaction_type     = ext and ext:interaction_type() or nil,
-                interactor_unit_uuid = unit_uuid(interactor),
-                interactee_unit_uuid = unit_uuid(interactee),
-            }
+            _active_ixn[unit_id] = Managers.state.unit_spawner:unit(interactor_go_id, false)
         end)
         if not ok then
             mod:echo("DT Exporter: rpc_interaction_started error: "..tostring(err))
@@ -397,13 +331,18 @@ safe_hook("InteracteeSystem", "rpc_interaction_stopped",
             local ext        = self._unit_to_extension_map
                 and self._unit_to_extension_map[interactee]
             _active_ixn[unit_id] = nil
+
+            local result_name = NetworkLookup.interaction_result
+                and NetworkLookup.interaction_result[result]
+            if result_name ~= "success" then return end
+
+            local a = _spawns[unit_uuid(interactor)]
+            local t = _spawns[unit_uuid(interactee)]
             _interacts[#_interacts+1] = {
-                event                = "interaction_stopped",
-                interaction_type     = ext and ext:interaction_type() or nil,
-                interactor_unit_uuid = unit_uuid(interactor),
-                interactee_unit_uuid = unit_uuid(interactee),
-                result               = NetworkLookup.interaction_result
-                    and NetworkLookup.interaction_result[result],
+                interaction_type = ext and ext:interaction_type() or nil,
+                interactor_name  = a and a.is_player and a.unit_name or nil,
+                interactee_name  = t and t.unit_name,
+                interactee_player = t and t.is_player or false,
             }
         end)
         if not ok then
@@ -412,17 +351,14 @@ safe_hook("InteracteeSystem", "rpc_interaction_stopped",
     end
 )
 
--- 4. Ability tracking (combat_ability + grenade_ability charge deltas)
+-- Ability uses, counted as charge decreases.
 local _ability_types = { "combat_ability", "grenade_ability" }
 
--- Darktide 1.13.0 replaced cooldowns with "ability resources"; reading the old
--- num_charges component field now throws. remaining_ability_charges() is the
--- supported API on both PlayerUnitAbilityExtension and PlayerHuskAbilityExtension.
+-- Current charges via the 1.13.0 API, with a pre-1.13.0 fallback.
 local function current_charges(self, ability_type)
     if self.remaining_ability_charges then
         return self:remaining_ability_charges(ability_type) or 0
     end
-    -- Pre-1.13.0 fallback
     local comps = self._ability_components or self._components
     local comp  = comps and comps[ability_type]
     return comp and comp.num_charges or 0
@@ -438,14 +374,14 @@ local function track_ability_update(self, unit, dt, t)
                 local key   = ability_type.."_"..uuid
                 local prev  = _ability_charges[key] or 0
                 local cur   = current_charges(self, ability_type)
-                if prev ~= cur then
+                if cur < prev then
+                    local sp = _spawns[uuid]
                     _abilities[#_abilities+1] = {
-                        player_unit_uuid = uuid,
-                        ability_type     = ability_type,
-                        charge_delta     = cur - prev,
+                        player_name  = sp and sp.is_player and sp.unit_name or nil,
+                        ability_type = ability_type,
                     }
-                    _ability_charges[key] = cur
                 end
+                _ability_charges[key] = cur
             end
         end
     end)
@@ -458,9 +394,7 @@ end
 safe_hook("PlayerUnitAbilityExtension", "update", track_ability_update)
 safe_hook("PlayerHuskAbilityExtension", "update", track_ability_update)
 
--- 5. Psyker smite / chain-lightning special case
---    The charge system doesn't fire for these; PDI detects them via weapon
---    action name transitions in PUME_update.
+-- Psyker Smite / chain lightning uses, which don't consume charges.
 safe_hook("PlayerUnitMoodExtension", "update",
     function(self, unit, dt, t)
         local ok, err = pcall(function()
@@ -474,10 +408,10 @@ safe_hook("PlayerUnitMoodExtension", "update",
             local uuid = unit_uuid(unit)
             if _psyker_actions[uuid] ~= cur then
                 if cur == "action_use_power" or cur == "action_spread_charged" then
+                    local sp = _spawns[uuid]
                     _abilities[#_abilities+1] = {
-                        player_unit_uuid = uuid,
-                        ability_type     = "grenade_ability",
-                        charge_delta     = -1,
+                        player_name  = sp and sp.is_player and sp.unit_name or nil,
+                        ability_type = "grenade_ability",
                     }
                 end
                 _psyker_actions[uuid] = cur
@@ -489,61 +423,19 @@ safe_hook("PlayerUnitMoodExtension", "update",
     end
 )
 
--- 6. Reset at mission start
---    DMF callback; fires on every hub <-> mission transition.
--- (state-change handler is defined after export_stats, below)
-
 -- ── Main export ────────────────────────────────────────────────────────────
+-- Builds per-player stats from a mission snapshot and saves the JSON.
+-- Kill damage uses PDI's live formula: health left before the killing hit.
 
 local function export_stats(src)
-
-    if not src then
+    if not src or (#src.attacks == 0 and next(src.profiles) == nil) then
         mod:echo("DT Exporter: ERROR - No mission data to export.")
         return
     end
 
-    -- Shadow the live tables with the chosen snapshot
-    local _spawns, _profiles, _attacks = src.spawns, src.profiles, src.attacks
-    local _abilities, _interacts       = src.abilities, src.interacts
-    local _pstatus, _start_time        = src.pstatus, src.start_time
-    local _havoc                       = src.havoc
-
-    if #_attacks == 0 and next(_spawns) == nil then
-        mod:echo("DT Exporter: ERROR - No session data. Complete a mission first.")
-        return
-    end
-
-    -- uuid_to_name: same key format as attack UUIDs, so lookups are valid
-    local uuid_to_name = {}
-    for uuid, v in pairs(_spawns) do
-        if v.unit_name then uuid_to_name[uuid] = v.unit_name end
-    end
-
-    local player_uuids = {}
-    for _, v in pairs(_pstatus) do
-        if v.player_unit_uuid then player_uuids[v.player_unit_uuid] = true end
-    end
-
-    local pcount = 0
-    for uuid in pairs(player_uuids) do
-        pcount = pcount + 1
-    end
-
-    if pcount == 0 then
-        mod:echo("DT Exporter: ERROR - No players found in session data.")
-        return
-    end
-
-    local unknown_breeds = {}
-
-    -- Solo session: kill damage formula adds raw damage to the final hit
-    -- PDI_Exporter always ran against PDI's live session, which uses the
-    -- "+ raw" kill formula. Our data is captured live the same way.
-    local is_local_session = true
-
     local stats = {}
     local function ensure(name)
-        if not name or name == "" then return end
+        if not name or name == "" then return nil end
         if not stats[name] then
             stats[name] = {
                 melee_elite_kills=0,   ranged_elite_kills=0,
@@ -552,59 +444,43 @@ local function export_stats(src)
                 boss_damage=0,         elite_damage=0,
                 horde_damage=0,        specialist_damage=0,
                 damage_taken=0,        blitz_uses=0,
-                combat_ability_uses=0, pull_up_done=0,
-                remove_net_done=0,     rescue_done=0,
-                revive_done=0,         needed_revives=0,
-                ammo_cache=0,          large_clip=0, small_clip=0,
+                combat_ability_uses=0, revives=0,
+                needed_revives=0,      ammo_cache=0,
+                large_clip=0,          small_clip=0,
             }
         end
+        return stats[name]
     end
 
-    -- Damage formula mirrors dataset_templates.lua exactly:
-    --   Non-kill:                  health_damage = v.damage
-    --   Kill, multiplayer:         health_damage = max_hp - damage_taken
-    --   Kill, solo:                health_damage = max_hp - damage_taken + v.damage
-    --   Kill, no max_hp available: health_damage = 1
-    for _, v in pairs(_attacks) do
-        local att  = v.attacking_unit_uuid
-        local def  = v.attacked_unit_uuid
-        local kill = (v.attack_result == "died")
-        local raw  = v.damage or 0
+    for pname in pairs(src.profiles) do ensure(pname) end
+    if next(stats) == nil then
+        mod:echo("DT Exporter: ERROR - No players found in session data.")
+        return
+    end
 
-        local def_spawn = _spawns[def]
-        local max_hp    = def_spawn and def_spawn.max_health
-        local dmg_taken = v.attacked_unit_damage_taken or 0
+    local unknown_breeds = {}
 
-        local health_dmg
-        if kill then
-            if max_hp then
-                if is_local_session then
-                    health_dmg = math.max(0, max_hp - dmg_taken + raw)
-                else
-                    health_dmg = math.max(0, max_hp - dmg_taken)
-                end
-            else
-                health_dmg = 1
-            end
-        else
-            health_dmg = raw
+    for _, v in ipairs(src.attacks) do
+        local health_dmg = v.damage
+        if v.killed then
+            health_dmg = v.defender_max_hp
+                and math.max(0, v.defender_max_hp - v.defender_dmg_taken + v.damage)
+                or 1
         end
 
-        if player_uuids[att] then
-            local pname = uuid_to_name[att]
-            local breed = uuid_to_name[def] or ""
-            if breed ~= "" and not player_uuids[def] and not is_known_breed(breed) then
+        if v.attacker_player and not v.defender_player then
+            local p     = ensure(v.attacker_name)
+            local breed = v.defender_name or ""
+            if breed ~= "" and not is_known_breed(breed) then
                 unknown_breeds[breed] = (unknown_breeds[breed] or 0) + 1
             end
-            if pname then
-                ensure(pname)
-                local p = stats[pname]
+            if p then
                 if     BOSS[breed]                               then p.boss_damage       = p.boss_damage       + health_dmg
                 elseif MELEE_ELITE[breed] or RANGED_ELITE[breed] then p.elite_damage      = p.elite_damage      + health_dmg
                 elseif HORDE_TRASH[breed] or RANGED_TRASH[breed] then p.horde_damage      = p.horde_damage      + health_dmg
                 elseif MELEE_SPEC[breed]  or RANGED_SPEC[breed]  then p.specialist_damage = p.specialist_damage + health_dmg
                 end
-                if kill then
+                if v.killed then
                     if     MELEE_ELITE[breed]  then p.melee_elite_kills    = p.melee_elite_kills    + 1
                     elseif RANGED_ELITE[breed] then p.ranged_elite_kills   = p.ranged_elite_kills   + 1
                     elseif MELEE_SPEC[breed]   then p.melee_special_kills  = p.melee_special_kills  + 1
@@ -616,124 +492,73 @@ local function export_stats(src)
             end
         end
 
-        if player_uuids[def] and raw > 0 then
-            local pname    = uuid_to_name[def]
-            local att_spawn = _spawns[att]
-            if pname and att_spawn ~= nil then
-                ensure(pname)
-                local player_health_dmg = kill and 1 or raw
-                stats[pname].damage_taken = stats[pname].damage_taken + player_health_dmg
+        if v.defender_player and v.attacker_known and v.damage > 0 then
+            local p = ensure(v.defender_name)
+            if p then p.damage_taken = p.damage_taken + (v.killed and 1 or v.damage) end
+        end
+    end
+
+    for _, v in ipairs(src.abilities) do
+        local p = ensure(v.player_name)
+        if p then
+            if     v.ability_type == "grenade_ability" then p.blitz_uses          = p.blitz_uses          + 1
+            elseif v.ability_type == "combat_ability"  then p.combat_ability_uses = p.combat_ability_uses + 1
             end
         end
     end
 
-    for _, v in pairs(_abilities) do
-        local pname  = uuid_to_name[v.player_unit_uuid]
-        local ability = v.ability_type or ""
-        local delta   = v.charge_delta or 0
-        if pname and delta < 0 then
-            ensure(pname)
-            if ability == "grenade_ability" then
-                stats[pname].blitz_uses = stats[pname].blitz_uses + 1
-            elseif ability == "combat_ability" then
-                stats[pname].combat_ability_uses = stats[pname].combat_ability_uses + 1
-            end
-        end
-    end
-
-    for _, v in pairs(_interacts) do
-        if v.event ~= "interaction_stopped" then goto continue end
+    local HELP_TYPES = { pull_up = true, remove_net = true, rescue = true, revive = true }
+    for _, v in ipairs(src.interacts) do
         local itype = v.interaction_type or ""
-        local aname = uuid_to_name[v.interactor_unit_uuid]
-        local tname = uuid_to_name[v.interactee_unit_uuid]
-
-        if aname and player_uuids[v.interactor_unit_uuid] then
-            ensure(aname)
-            local p = stats[aname]
+        local p = ensure(v.interactor_name)
+        if p then
             if itype == "ammunition" then
-                if     AMMO_CACHE[tname] then p.ammo_cache = p.ammo_cache + 1
-                elseif LARGE_CLIP[tname] then p.large_clip = p.large_clip + 1
-                elseif SMALL_CLIP[tname] then p.small_clip = p.small_clip + 1
+                local item = v.interactee_name
+                if     AMMO_CACHE[item] then p.ammo_cache = p.ammo_cache + 1
+                elseif LARGE_CLIP[item] then p.large_clip = p.large_clip + 1
+                elseif SMALL_CLIP[item] then p.small_clip = p.small_clip + 1
                 end
-            elseif itype == "pull_up"    then p.pull_up_done    = p.pull_up_done    + 1
-            elseif itype == "remove_net" then p.remove_net_done = p.remove_net_done + 1
-            elseif itype == "rescue"     then p.rescue_done     = p.rescue_done     + 1
-            elseif itype == "revive"     then p.revive_done     = p.revive_done     + 1
+            elseif HELP_TYPES[itype] then
+                p.revives = p.revives + 1
             end
         end
-
-        if tname and player_uuids[v.interactee_unit_uuid] then
-            if itype == "pull_up" or itype == "remove_net"
-            or itype == "rescue"  or itype == "revive" then
-                ensure(tname)
-                stats[tname].needed_revives = stats[tname].needed_revives + 1
-            end
+        if HELP_TYPES[itype] and v.interactee_player then
+            local t = ensure(v.interactee_name)
+            if t then t.needed_revives = t.needed_revives + 1 end
         end
-        ::continue::
     end
 
-    local now   = os.date("*t")
-    local start = _start_time and os.date("*t", _start_time) or now
+    local start = os.date("*t", src.start_time or os.time())
     local date_str = string.format("%02d/%02d/%04d", start.month, start.day, start.year)
     local time_str = string.format("%02d:%02d:%02d", start.hour, start.min, start.sec)
 
-    local equipment = {}
-    for uuid, prof in pairs(_profiles) do
-        local pname = uuid_to_name[uuid] or uuid
+    local function weapon_template(item)
+        local mi = item and rawget(item, "__master_item")
+        return (type(mi) == "table" and mi.weapon_template) and tostring(mi.weapon_template) or "unknown"
+    end
 
+    local equipment = {}
+    for pname, prof in pairs(src.profiles) do
         local arch_name = "unknown"
         if type(prof.archetype) == "table" then
-            arch_name = tostring(prof.archetype.name
-                or prof.archetype.archetype_name
-                or prof.archetype.id or "unknown")
+            arch_name = tostring(prof.archetype.name or prof.archetype.archetype_name
+                                 or prof.archetype.id or "unknown")
         elseif prof.archetype then
             arch_name = tostring(prof.archetype)
         end
-
-        local melee_weapon  = "unknown"
-        local ranged_weapon = "unknown"
-        if type(prof.loadout) == "table" then
-            local primary   = prof.loadout["slot_primary"]
-            local secondary = prof.loadout["slot_secondary"]
-            if primary then
-                local mi = rawget(primary, "__master_item")
-                if mi and type(mi) == "table" and mi.weapon_template then
-                    melee_weapon = tostring(mi.weapon_template)
-                end
-            end
-            if secondary then
-                local mi = rawget(secondary, "__master_item")
-                if mi and type(mi) == "table" and mi.weapon_template then
-                    ranged_weapon = tostring(mi.weapon_template)
-                end
-            end
-        end
-
-        local talents_selected = {}
-        if type(prof.talents) == "table" then
-            for k, val in pairs(prof.talents) do
-                if type(val) == "number" and val > 0 then
-                    talents_selected[tostring(k)] = val
-                end
-            end
-        end
-
+        local loadout = type(prof.loadout) == "table" and prof.loadout or {}
         equipment[pname] = {
             class            = arch_name,
-            melee_weapon     = melee_weapon,
-            ranged_weapon    = ranged_weapon,
-            talents_selected = talents_selected,
+            melee_weapon     = weapon_template(loadout["slot_primary"]),
+            ranged_weapon    = weapon_template(loadout["slot_secondary"]),
+            talents_selected = prof.talents or {},
         }
     end
 
-    -- Medicae servo skull revives happen server-side and never reach the
-    -- client as an interaction. With the medicae talent, every skull use (a
-    -- blitz charge) is an inject on a downed ally, so credit blitz uses as
-    -- revives. If the flame skull talent is ALSO selected, a blitz use could
-    -- be either, so those uses are left unattributed (not counted as revives).
-    -- Note: the revived player's needed_revives does not include these.
     local MEDICAE_TALENT = "cryptic_servo_skull_inject_ally"
     local FLAME_TALENT   = "cryptic_flamethrower"
+    -- Medicae skull revives happen server-side, so a medicae Skitarii's blitz
+    -- uses count as revives; with the flame skull too, they stay unattributed.
     local function skull_revives(pname, p)
         local eq = equipment[pname]
         local t  = eq and eq.talents_selected
@@ -743,8 +568,8 @@ local function export_stats(src)
         return 0
     end
 
-    local export  = { session_date=date_str, session_time=time_str, players={}, equipment=equipment,
-                      havoc=_havoc }
+    local export   = { session_date = date_str, session_time = time_str,
+                       players = {}, equipment = equipment, havoc = src.havoc }
     local exported = 0
     for pname, p in pairs(stats) do
         exported = exported + 1
@@ -762,18 +587,12 @@ local function export_stats(src)
             damage_taken         = math.floor(p.damage_taken),
             blitz_uses           = p.blitz_uses,
             combat_ability_uses  = p.combat_ability_uses,
-            revives_done         = p.pull_up_done + p.remove_net_done
-                                   + p.rescue_done + p.revive_done
-                                   + skull_revives(pname, p),
+            revives_done         = p.revives + skull_revives(pname, p),
             needed_revives       = p.needed_revives,
-            ammo_used            = (p.ammo_cache * 100)
-                                   + (p.large_clip  * 50)
-                                   + (p.small_clip  * 15),
+            ammo_used            = (p.ammo_cache * 100) + (p.large_clip * 50) + (p.small_clip * 15),
         }
     end
 
-    -- Enemies hit by players that match no breed table. Their damage and kills
-    -- are NOT counted anywhere until added to a table at the top of this file.
     local unknown_count = 0
     for _ in pairs(unknown_breeds) do unknown_count = unknown_count + 1 end
     if unknown_count > 0 then
@@ -791,9 +610,8 @@ local function export_stats(src)
 end
 
 -- ── Auto-export on leaving a mission ──────────────────────────────────────
--- rpc_game_mode_end_conditions_met no longer fires on clients (1.13.0), so
--- we export when the next gameplay state is entered instead. The hub has no
--- combat, so hub -> mission transitions don't trigger an export.
+-- Exports when the next gameplay state loads (the end-of-mission hook no
+-- longer fires on clients). The hub has no combat, so it never exports.
 
 mod.on_game_state_changed = function(status, state_name)
     if status == "enter" and state_name == "StateGameplay" then
