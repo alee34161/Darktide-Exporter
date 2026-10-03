@@ -12,35 +12,48 @@
     },
 
     "weapons": {
-        "powersword_p1_m2":  "Power Sword",
-        "powersword_p2_m1": "Power Falchion",
-        "combatsword_p3_m2": "Duelling Sword",
-        "combataxe_p2_m3":   "Tactical Axe",
-        "combataxe_p2_m1":   "Tactical Axe",
-        "forcesword_p1_m2":  "Blaze Force Sword",
-        "bolter_p1_m1":      "Spearhead Boltgun",
-        "shotgun_p4_m2":     "Exterminator Shotgun",
-        "laspistol_p1_m1":   "Heavy Laspistol",
-        "forcestaff_p2_m1":   "Inferno Force Staff",
-        "dual_shivs_p1_m1":  "Shivs",
-        "plasma_rifle_p1_m1": "Plasma Rifle",
-        "dual_autopistols_p1_m1": "Dual Autopistols",
-        "powermaul_p2_m1": "Arbites Shock Maul",
-        "plasmagun_p1_m1": "Plasma Gun",
-        "boltpistol_p1_m1": "Bolt Pistol",
-        "shotgun_p1_m1": "Combat Shotgun",
-        "powermaul_shield_p1_m1": "Shock Maul and Suppression Shield",
-        "lasgun_p2_m3": "Helbore Lasgun",
-        "flamer_p1_m1": "Purgation Flamer",
-        "powermaul_p3_m1": "Arc Maul",
-        "galvanic_rifle_p1_m1": "Galvanic Rifle",
-        "phosphor_pistol_p1_m1": "Phosphor Blast Pistol",
-        "ogryn_powermaul_p1_m1": "Power Maul",
-        "ogryn_rippergun_p1_m1": "Ripper Gun",
-        "transonic_sword_transonic_knife_p1_m1": "Paired Transonic Blades",
-        "powermaul_p1_m2": "Shock Maul",
-        "arc_rifle_p1_m1": "Arc Rifle",
-        "needlepistol_p1_m2": "Needle Pistol"
+        "powersword_p1_*":  "Power Sword",
+        "powersword_p2_*": "Power Falchion",
+        "combatsword_p3_*": "Duelling Sword",
+        "combataxe_p2_*":   "Tactical Axe",
+        "forcesword_p1_*":  "Blaze Force Sword",
+        "bolter_p1_*":      "Spearhead Boltgun",
+        "shotgun_p4_*":     "Exterminator Shotgun",
+        "laspistol_p1_*":   "Heavy Laspistol",
+        "forcestaff_p2_*":   "Inferno Force Staff",
+        "dual_shivs_p1_*":  "Shivs",
+        "plasma_rifle_p1_*": "Plasma Rifle",
+        "dual_autopistols_p1_*": "Dual Autopistols",
+        "powermaul_p2_*": "Arbites Shock Maul",
+        "plasmagun_p1_*": "Plasma Gun",
+        "boltpistol_p1_*": "Bolt Pistol",
+        "shotgun_p1_*": "Combat Shotgun",
+        "powermaul_shield_p1_*": "Shock Maul and Suppression Shield",
+        "lasgun_p2_*": "Helbore Lasgun",
+        "flamer_p1_*": "Purgation Flamer",
+        "powermaul_p3_*": "Arc Maul",
+        "galvanic_rifle_p1_*": "Galvanic Rifle",
+        "phosphor_pistol_p1_*": "Phosphor Blast Pistol",
+        "ogryn_powermaul_p1_*": "Power Maul",
+        "ogryn_rippergun_p1_*": "Ripper Gun",
+        "transonic_sword_transonic_knife_p1_*": "Paired Transonic Blades",
+        "powermaul_p1_*": "Shock Maul",
+        "arc_rifle_p1_*": "Arc Rifle",
+        "needlepistol_p1_*": "Needle Pistol",
+        "shotpistol_shield_p1_*": "Subductor Shotpistol and Riot Shield",
+        "ogryn_thumper_p1_*": "Rumbler",
+        "ogryn_powermaul_slabshield_p1_*": "Battle Maul & Slab Shield",
+        "forcesword_2h_p1_*": "Blaze Force Greatsword",
+        "ogryn_gauntlet_p1_*": "Grenadier Gauntlet",
+        "combatsword_p1_*": "\"Devil's Claw\" Sword",
+        "chainsword_2h_p1_*": "Heavy Eviscerator",
+        "forcestaff_p3_*": "Electrokinetic Force Staff",
+        "powersword_2h_p1_*": "Relic Blade",
+        "lasgun_p3_*": "Recon Lasgun",
+        "combatknife_p1_*": "Combat Knife",
+        "saw_p1*": "Bone Saw",
+        "shotgun_p2*": "Double-Barrelled Shotgun",
+        "autogun_p1*": "Infantry Autogun"
     },
 
     "defaults": {
@@ -61,7 +74,9 @@
         "zealot_flame_grenade":     "Immolation Grenade",
         "cryptic_servo_skull_improved":  "Artificer Servo-Skull",
         "ogryn_grenade_friend_rock":    "Big Friendly Rock",
-        "cryptic_servo_skull_order":    "Base Blitz"
+        "cryptic_servo_skull_order":    "Base Blitz",
+        "zealot_improved_stun_grenade": "Stunstorm Grenade",
+        "broker_blitz_tox_grenade":     "Chem Grenade"
     },
 
     "aura": {
@@ -76,8 +91,10 @@
         "ogryn_melee_damage_coherency_improved":    "Bonebreaker's Aura",
         "cryptic_coherency_regen_aura": "Base Aura",
         "cryptic_coherency_regen_aura_improved": "Resurgence",
-        "cryptic_ammo_aura":    "Ammunition Deposit"
-
+        "cryptic_ammo_aura":    "Ammunition Deposit",
+        "psyker_aura_crit_chance_aura": "Prescience",
+        "broker_coherency_anarchist":   "Anarchist",
+        "broker_coherency_melee_damage":    "Ruffian"
     },
 
     "combat_ability": {
@@ -95,7 +112,8 @@
         "ogryn_taunt_shout":    "Loyal Protector",
         "cryptic_chordclaw":    "Chordclaw Strike",
         "cryptic_discharge":    "Voltaic Emitter",
-        "broker_ability_stimm_field":   "Stimm Supply"
+        "broker_ability_stimm_field":   "Stimm Supply",
+        "zealot_attack_speed_post_ability": "Fury of the Faithful"
 
     },
 
@@ -113,6 +131,10 @@
         "cryptic_redline":  "Redline Capacitors",
         "ogryn_passive_heavy_hitter":   "Heavy Hitter",
         "broker_keystone_chemical_dependency":  "Chemical Dependency",
-        "cryptic_dissector":    "Flensing Protocols"
+        "cryptic_dissector":    "Flensing Protocols",
+        "zealot_martyrdom": "Martyrdom",
+        "ogryn_carapace_armor": "Feel No Pain",
+        "psyker_new_mark_passive": "Disrupt Destiny",
+        "zealot_quickness_passive": "Inexorable Judgement"
     }
 }

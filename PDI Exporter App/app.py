@@ -17,6 +17,7 @@ import threading
 import os
 import re
 import json
+import fnmatch
 from pathlib import Path
 from datetime import datetime
 
@@ -43,7 +44,10 @@ PLAYER_TABS = {
 # of the stats row so the Apps Script can identify them per run.
 RANDOMS_TAB = os.environ.get("RANDOMS_TAB_NAME", "Randoms")
 
-TODO = "TODO"
+# One row per Havoc mission (per report, not per player). Keyed by date+time.
+HAVOC_TAB = os.environ.get("HAVOC_TAB_NAME", "Havoc")
+
+TODO = "N/A"
 
 # ── Lookup table ───────────────────────────────────────────────────────────
 
@@ -65,11 +69,29 @@ _LOOKUP = load_lookup()
 _TALENT_CATEGORIES = ("blitz", "aura", "combat_ability", "keystones")
 
 def lookup(section, key):
-    """Return display name for key in section, or key itself as fallback."""
+    """
+    Return display name for key in section, or key itself as fallback.
+
+    Match order:
+      1. Exact key match  (fastest, no ambiguity)
+      2. Wildcard pattern match using fnmatch  (e.g. "laspistol_p1_*")
+         Patterns are tried in the order they appear in the JSON section.
+         The first matching pattern wins.
+      3. Fall back to the raw key if nothing matched.
+    """
     if not key or key == TODO:
         return TODO
-    val = _LOOKUP.get(section, {}).get(key, "")
-    return val if val else key
+    section_data = _LOOKUP.get(section, {})
+    # 1. Exact match
+    val = section_data.get(key, "")
+    if val:
+        return val
+    # 2. Wildcard patterns — only keys that contain * or ? are tried
+    for pattern, display in section_data.items():
+        if ("*" in pattern or "?" in pattern) and fnmatch.fnmatch(key, pattern):
+            return display if display else key
+    # 3. Raw key fallback
+    return key
 
 def _default_keys_for(cat):
     """
@@ -233,6 +255,8 @@ def read_export_json(path):
 
     equipment_data = data.get("equipment", {})
 
+    run_info = _parse_havoc(data.get("havoc"), session_date, session_time)
+
     report = {}
     for in_game_name, stats in players_data.items():
         equip = equipment_data.get(in_game_name, {})
@@ -274,7 +298,57 @@ def read_export_json(path):
             "keystones":      talent_fields["keystones"],
         }
 
-    return report, errors
+    return report, errors, run_info
+
+
+def _dtf_list(value):
+    """
+    DMF:dtf may write a Lua array as a JSON list or as an object keyed
+    "1", "2", ... Return the items in order either way.
+    """
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        def _k(k):
+            try:
+                return int(k)
+            except (TypeError, ValueError):
+                return 0
+        return [value[k] for k in sorted(value, key=_k)]
+    return []
+
+
+def _parse_havoc(havoc, session_date, session_time):
+    """
+    Turn the export's havoc block into one per-run row, or None for
+    non-Havoc missions. Names go through lookup.json sections
+    "havoc_mutators" / "havoc_modifiers" (raw key if no entry).
+    """
+    if not isinstance(havoc, dict):
+        return None
+    rank = strip_dmf(havoc.get("rank"))
+    if rank in (None, ""):
+        return None
+
+    mutators = [
+        lookup("havoc_mutators", str(strip_dmf(c)))
+        for c in _dtf_list(havoc.get("circumstances"))
+    ]
+    modifiers = []
+    for m in _dtf_list(havoc.get("modifiers")):
+        if not isinstance(m, dict):
+            continue
+        name  = lookup("havoc_modifiers", str(strip_dmf(m.get("name", ""))))
+        level = strip_dmf(m.get("level", ""))
+        modifiers.append(f"{name} L{level}" if level != "" else name)
+
+    return {
+        "date":       session_date,
+        "start_time": session_time,
+        "rank":       rank,
+        "mutators":   ", ".join(mutators),
+        "modifiers":  ", ".join(modifiers),
+    }
 
 
 # ── Google Sheets ──────────────────────────────────────────────────────────
@@ -406,7 +480,44 @@ def ensure_randoms_tab_headers(service):
     ).execute()
 
 
-def upload_to_sheets(report, player_map, log_fn):
+def _ensure_havoc_tab(service):
+    """Create the Havoc tab with a header row if it doesn't exist yet."""
+    meta = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+    existing = {s["properties"]["title"] for s in meta.get("sheets", [])}
+    if HAVOC_TAB in existing:
+        return
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=SPREADSHEET_ID,
+        body={"requests": [{"addSheet": {"properties": {"title": HAVOC_TAB}}}]},
+    ).execute()
+    service.spreadsheets().values().update(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"'{HAVOC_TAB}'!A1",
+        valueInputOption="USER_ENTERED",
+        body={"values": [["Date", "Time", "Havoc Rank", "Mutators", "Modifiers"]]},
+    ).execute()
+
+
+def upload_havoc(service, run_info, log_fn):
+    """Append one row for this run to the Havoc tab."""
+    _ensure_havoc_tab(service)
+    result = service.spreadsheets().values().get(
+        spreadsheetId=SPREADSHEET_ID, range=f"'{HAVOC_TAB}'!A:A"
+    ).execute()
+    row = len(result.get("values", [])) + 1
+    service.spreadsheets().values().update(
+        spreadsheetId=SPREADSHEET_ID,
+        range=f"'{HAVOC_TAB}'!A{row}",
+        valueInputOption="USER_ENTERED",
+        body={"values": [[
+            run_info["date"], run_info["start_time"], run_info["rank"],
+            run_info["mutators"], run_info["modifiers"],
+        ]]},
+    ).execute()
+    log_fn(f"  OK  Havoc rank {run_info['rank']} -> '{HAVOC_TAB}' row {row}")
+
+
+def upload_to_sheets(report, player_map, log_fn, run_info=None):
     """
     Upload report to Sheets.  player_map = {in_game_name: real_name}.
 
@@ -470,6 +581,10 @@ def upload_to_sheets(report, player_map, log_fn):
                 },
             ).execute()
             log_fn(f"  OK  {in_game} ({display_name!r}) -> '{RANDOMS_TAB}' rows {row}-{row+1} [random]")
+
+    # Per-run Havoc data, written once regardless of which players were present
+    if run_info:
+        upload_havoc(service, run_info, log_fn)
 
 
 # ── GUI ────────────────────────────────────────────────────────────────────
@@ -596,7 +711,7 @@ class App(tk.Tk):
             return
 
         self._log_msg(f"Loading {path} ...")
-        report, errors = read_export_json(path)
+        report, errors, run_info = read_export_json(path)
 
         for e in errors:
             self._log_msg(f"ERROR: {e}")
@@ -606,6 +721,9 @@ class App(tk.Tk):
             return
 
         self._report = report
+        self._run_info = run_info
+        if run_info:
+            self._log_msg(f"Havoc rank {run_info['rank']} detected.")
         self._populate_table(report)
         self._btn_upload.config(state="normal")
         self._log_msg(f"Loaded {len(report)} player(s): {', '.join(report.keys())}")
@@ -669,7 +787,8 @@ class App(tk.Tk):
 
         def run():
             try:
-                upload_to_sheets(self._report, player_map, self._log_msg)
+                upload_to_sheets(self._report, player_map, self._log_msg,
+                                 getattr(self, "_run_info", None))
                 self.after(0, self._on_upload_done)
             except Exception as e:
                 self._log_msg(f"Upload error: {e}")
