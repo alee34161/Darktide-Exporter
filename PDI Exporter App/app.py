@@ -269,6 +269,19 @@ def _dtf_list(value):
     return []
 
 
+# The export's mission result: "win", "loss", "unfinished", or "unknown" for
+# exports made before the mod recorded it.
+def read_outcome(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        inner = next(iter(data.values())) if len(data) == 1 else data
+        value = strip_dmf(inner.get("outcome"))
+        return str(value) if value not in (None, "") else "unknown"
+    except (OSError, ValueError, AttributeError, StopIteration):
+        return "unknown"
+
+
 # Havoc row for this run (rank and mutators), or None for non-Havoc missions.
 def _parse_havoc(havoc, session_date, session_time):
     if not isinstance(havoc, dict):
@@ -617,6 +630,9 @@ class App(tk.Tk):
 
         self._report = report
         self._run_info = run_info
+        outcome = read_outcome(path)
+        self._log_msg(f"Result: {outcome.upper()}")
+        self.title(f"Darktide Uploader - {os.path.basename(path)} - {outcome.upper()}")
         if run_info:
             self._log_msg(f"Havoc rank {run_info['rank']} detected.")
         self._populate_table(report)

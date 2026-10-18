@@ -55,11 +55,12 @@ end
 -- Enemy categories. Add new enemies from zz_UNKNOWN_ENEMIES files here.
 
 local MELEE_ELITE = {
-    chaos_ogryn_bulwark  = true,  -- Crusher
-    chaos_ogryn_executor = true,  -- Mauler variant
-    cultist_berzerker    = true,  -- Rager
-    renegade_berzerker   = true,  -- Rager variant
-    renegade_executor    = true,  -- Mauler
+    chaos_mutator_ritualist = true,  -- Ritualist (Heinous Rituals)
+    chaos_ogryn_bulwark     = true,  -- Crusher
+    chaos_ogryn_executor    = true,  -- Mauler variant
+    cultist_berzerker       = true,  -- Rager
+    renegade_berzerker      = true,  -- Rager variant
+    renegade_executor       = true,  -- Mauler
 }
 local RANGED_ELITE = {
     chaos_ogryn_gunner      = true,  -- Reaper
@@ -71,16 +72,16 @@ local RANGED_ELITE = {
     renegade_shocktrooper   = true,  -- Shocktrooper
 }
 local MELEE_SPEC = {
-    chaos_armored_hound    = true,  -- Armored Hound
-    chaos_hound            = true,  -- Hound
-    chaos_hound_mutator    = true,  -- Hound variant
-    chaos_poxwalker_bomber = true,  -- Burster
-    cultist_flamer         = true,  -- Flamer
-    cultist_grenadier      = true,  -- Bomber
-    cultist_mutant         = true,  -- Mutant
-    cultist_mutant_mutator = true,  -- Mutant variant
-    renegade_flamer        = true,  -- Flamer
-    renegade_netgunner     = true,  -- Trapper
+    chaos_armored_hound     = true,  -- Armored Hound
+    chaos_hound             = true,  -- Hound
+    chaos_poxwalker_bomber  = true,  -- Burster
+    cultist_flamer          = true,  -- Flamer
+    cultist_grenadier       = true,  -- Bomber
+    cultist_mutant          = true,  -- Mutant
+    cultist_mutant_mutator  = true,  -- Mutant variant
+    renegade_flamer         = true,  -- Flamer
+    renegade_flamer_mutator = true,  -- Flamer variant
+    renegade_netgunner      = true,  -- Trapper
 }
 local RANGED_SPEC = {
     renegade_grenadier = true,  -- Bomber
@@ -107,6 +108,8 @@ local BOSS = {
     attack_valkyrie           = true,
     chaos_beast_of_nurgle     = true,
     chaos_daemonhost          = true,
+    chaos_daemonhost_torment  = true,  -- Event Daemonhost
+    chaos_mutator_daemonhost  = true,  -- Mutator Daemonhost
     chaos_ogryn_houndmaster   = true,
     chaos_plague_ogryn        = true,
     chaos_spawn               = true,
@@ -138,6 +141,7 @@ local _ability_charges = {}
 local _psyker_actions  = {}
 local _start_time      = nil
 local _havoc           = nil
+local _outcome         = nil
 
 local function reset_data()
     _spawns          = {}
@@ -150,6 +154,7 @@ local function reset_data()
     _psyker_actions  = {}
     _start_time      = nil
     _havoc           = nil
+    _outcome         = nil
 end
 
 -- Last mission's data, kept for /dt_export in the hub.
@@ -163,6 +168,7 @@ local function snapshot()
         interacts  = _interacts,
         start_time = _start_time,
         havoc      = _havoc,
+        outcome    = _outcome,
     }
 end
 
@@ -283,25 +289,37 @@ safe_hook("UnitSpawnerManager", "_add_network_unit",
     end
 )
 
--- Hits: damage, kills, and damage taken.
+-- Hits: damage, kills, and damage taken. Each enemy keeps a running total of
+-- reported damage from every attacker; a killing hit is credited only the
+-- health it had left (max health - running total), so overkill is excluded.
 safe_hook("AttackReportManager", "add_attack_result",
     function(self, damage_profile, attacked_unit, attacking_unit, _dir, _pos,
              hit_weakspot, damage, attack_result)
         local ok, err = pcall(function()
-            local att = _spawns[unit_uuid(attacking_unit)]
-            local def = _spawns[unit_uuid(attacked_unit)]
-            local health_ext = attacked_unit
-                and ScriptUnit.has_extension(attacked_unit, "health_system")
+            local att    = _spawns[unit_uuid(attacking_unit)]
+            local def    = _spawns[unit_uuid(attacked_unit)]
+            local raw    = damage or 0
+            local killed = attack_result == "died"
+            local health_dmg = raw
+            if def then
+                local seen = def.damage_seen or 0
+                if killed then
+                    local max_hp = def.max_health
+                    health_dmg = max_hp and math.min(raw, math.max(0, max_hp - seen)) or 1
+                end
+                def.damage_seen = seen + health_dmg
+            elseif killed then
+                health_dmg = 1
+            end
             _attacks[#_attacks+1] = {
-                attacker_name     = att and att.unit_name,
-                attacker_known    = att ~= nil,
-                attacker_player   = att and att.is_player or false,
-                defender_name     = def and def.unit_name,
-                defender_player   = def and def.is_player or false,
-                defender_max_hp   = def and def.max_health,
-                defender_dmg_taken = health_ext and health_ext:damage_taken() or 0,
-                damage            = damage or 0,
-                killed            = attack_result == "died",
+                attacker_name   = att and att.unit_name,
+                attacker_known  = att ~= nil,
+                attacker_player = att and att.is_player or false,
+                defender_name   = def and def.unit_name,
+                defender_player = def and def.is_player or false,
+                damage          = raw,
+                health_dmg      = health_dmg,
+                killed          = killed,
             }
         end)
         if not ok then
@@ -366,14 +384,25 @@ end
 
 local _ability_error_logged = false
 
+-- Whether a player can be using abilities: alive, and not dead or hogtied
+-- (death unequips abilities, which empties their charges).
+local function can_use_abilities(unit)
+    if not HEALTH_ALIVE[unit] then return false end
+    local ude   = ScriptUnit.has_extension(unit, "unit_data_system")
+    local cs    = ude and ude:read_component("character_state")
+    local state = cs and cs.state_name
+    return state ~= "dead" and state ~= "hogtied"
+end
+
 local function track_ability_update(self, unit, dt, t)
     local ok, err = pcall(function()
+        local uuid   = unit_uuid(unit)
+        local usable = can_use_abilities(unit)
         for _, ability_type in ipairs(_ability_types) do
-            if self.ability_enabled and self:ability_enabled(ability_type) then
-                local uuid  = unit_uuid(unit)
-                local key   = ability_type.."_"..uuid
-                local prev  = _ability_charges[key] or 0
-                local cur   = current_charges(self, ability_type)
+            local key = ability_type.."_"..uuid
+            if usable and self.ability_enabled and self:ability_enabled(ability_type) then
+                local prev = _ability_charges[key] or 0
+                local cur  = current_charges(self, ability_type)
                 if cur < prev then
                     local sp = _spawns[uuid]
                     _abilities[#_abilities+1] = {
@@ -382,6 +411,8 @@ local function track_ability_update(self, unit, dt, t)
                     }
                 end
                 _ability_charges[key] = cur
+            else
+                _ability_charges[key] = nil
             end
         end
     end)
@@ -425,7 +456,6 @@ safe_hook("PlayerUnitMoodExtension", "update",
 
 -- ── Main export ────────────────────────────────────────────────────────────
 -- Builds per-player stats from a mission snapshot and saves the JSON.
--- Kill damage uses PDI's live formula: health left before the killing hit.
 
 local function export_stats(src)
     if not src or (#src.attacks == 0 and next(src.profiles) == nil) then
@@ -461,12 +491,7 @@ local function export_stats(src)
     local unknown_breeds = {}
 
     for _, v in ipairs(src.attacks) do
-        local health_dmg = v.damage
-        if v.killed then
-            health_dmg = v.defender_max_hp
-                and math.max(0, v.defender_max_hp - v.defender_dmg_taken + v.damage)
-                or 1
-        end
+        local health_dmg = v.health_dmg
 
         if v.attacker_player and not v.defender_player then
             local p     = ensure(v.attacker_name)
@@ -569,6 +594,7 @@ local function export_stats(src)
     end
 
     local export   = { session_date = date_str, session_time = time_str,
+                       outcome = src.outcome or "unfinished",
                        players = {}, equipment = equipment, havoc = src.havoc }
     local exported = 0
     for pname, p in pairs(stats) do
@@ -606,6 +632,22 @@ local function export_stats(src)
     if unknown_count > 0 then
         mod:echo("DT Exporter: WARNING - "..unknown_count
             .." unrecognised enemy type(s). See zz_UNKNOWN_ENEMIES file in dump")
+    end
+end
+
+-- ── Mission outcome ────────────────────────────────────────────────────────
+-- The client's game mode manager stores the result when the mission ends; it
+-- is replaced on leaving, so the result is captured while still in the mission.
+
+local OUTCOME_LABELS = { won = "win", lost = "loss" }
+
+mod.update = function()
+    if _outcome or #_attacks == 0 then return end
+    local ok, result = pcall(function()
+        return Managers.state.game_mode:end_conditions_met_outcome()
+    end)
+    if ok and result then
+        _outcome = OUTCOME_LABELS[result] or tostring(result)
     end
 end
 

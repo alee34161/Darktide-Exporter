@@ -15,7 +15,14 @@
         "mutator_havoc_armored_infected":   "Moebian 21st",
         "mutator_havoc_rotten_armor":   "Rotten Armor",
         "mutator_increased_difficulty": "Emperor's Fading Light I",
-        "mutator_highest_difficulty":   "Emperor's Fading Light II"
+        "mutator_highest_difficulty":   "Emperor's Fading Light II",
+        "mutator_havoc_enemies_parasite_headshot":  "Cranial Corruption",
+        "mutator_havoc_chaos_rituals":  "Heinous Rituals",
+        "toxic_gas_01": "Pox Gas",
+        "mutator_stimmed_minions": "Blighted Stimms",
+        "ventilation_purge_01": "Ventilation Purge",
+        "ember_01_havoc": "Inferno"
+
     },
 
     "weapons": {
@@ -62,7 +69,9 @@
         "shotgun_p2*": "Double-Barrelled Shotgun",
         "autogun_p1*": "Infantry Autogun",
         "ogryn_hammer_2h_p1*": "Cruncher",
-        "shotgun_p3*": "Huntsman's Shotgun"
+        "shotgun_p3*": "Huntsman's Shotgun",
+        "forcestaff_p4*": "Voidstrike Force Staff",
+        "stubrevolver_p1*": "Revolver"
     },
 
     "defaults": {
@@ -86,7 +95,10 @@
         "cryptic_servo_skull_order":    "Base Blitz",
         "zealot_improved_stun_grenade": "Stunstorm Grenade",
         "broker_blitz_tox_grenade":     "Chem Grenade",
-        "ogryn_box_explodes":           "Bombs Away!"
+        "ogryn_box_explodes":           "Bombs Away!",
+        "psyker_grenade_throwing_knives":   "Assail",
+        "veteran_smoke_grenade":    "Smoke Grenade",
+        "ogryn_grenade_frag":   "Frag Bomb"
     },
 
     "aura": {
@@ -123,7 +135,9 @@
         "cryptic_chordclaw":    "Chordclaw Strike",
         "cryptic_discharge":    "Voltaic Emitter",
         "broker_ability_stimm_field":   "Stimm Supply",
-        "zealot_attack_speed_post_ability": "Fury of the Faithful"
+        "zealot_attack_speed_post_ability": "Fury of the Faithful",
+        "ogryn_longer_charge":  "Indomitable",
+        "adamant_drone_buff_talent":    "Nuncio Aquila"
 
     },
 
@@ -145,6 +159,7 @@
         "zealot_martyrdom": "Martyrdom",
         "ogryn_carapace_armor": "Feel No Pain",
         "psyker_new_mark_passive": "Disrupt Destiny",
-        "zealot_quickness_passive": "Inexorable Judgement"
+        "zealot_quickness_passive": "Inexorable Judgement",
+        "broker_keystone_adrenaline_junkie": "Adrenaline Frenzy"
     }
 }
