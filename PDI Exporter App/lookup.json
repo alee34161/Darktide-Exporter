@@ -21,8 +21,8 @@
         "toxic_gas_01": "Pox Gas",
         "mutator_stimmed_minions": "Blighted Stimms",
         "ventilation_purge_01": "Ventilation Purge",
-        "ember_01_havoc": "Inferno"
-
+        "ember_01_havoc": "Inferno",
+        "darkness_01":  "Power Supply Interruption"
     },
 
     "weapons": {

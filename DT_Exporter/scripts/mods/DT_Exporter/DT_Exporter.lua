@@ -142,6 +142,11 @@ local _psyker_actions  = {}
 local _start_time      = nil
 local _havoc           = nil
 local _outcome         = nil
+local _deaths          = {}
+local _orphans         = {}
+local _recovered       = 0
+local _unmatched       = 0
+local _tracked         = {}
 
 local function reset_data()
     _spawns          = {}
@@ -155,6 +160,11 @@ local function reset_data()
     _start_time      = nil
     _havoc           = nil
     _outcome         = nil
+    _deaths          = {}
+    _orphans         = {}
+    _recovered       = 0
+    _unmatched       = 0
+    _tracked         = {}
 end
 
 -- Last mission's data, kept for /dt_export in the hub.
@@ -167,6 +177,8 @@ local function snapshot()
         abilities  = _abilities,
         interacts  = _interacts,
         start_time = _start_time,
+        recovered  = _recovered,
+        unmatched  = _unmatched,
         havoc      = _havoc,
         outcome    = _outcome,
     }
@@ -183,6 +195,61 @@ end
 local function in_mission()
     local mode = game_mode_name()
     return mode ~= nil and mode ~= "hub"
+end
+
+-- ── Enemy health ───────────────────────────────────────────────────────────
+-- The server's per-hit damage limit for an enemy type (e.g. 0.025 for the
+-- Spillway boss), read from the game's breed data.
+local _breeds = nil
+local function breed_hit_clamp(breed_name)
+    if not breed_name then return nil end
+    if _breeds == nil then
+        local ok, b = pcall(require, "scripts/settings/breed/breeds")
+        _breeds = ok and type(b) == "table" and b or false
+    end
+    local breed = _breeds and _breeds[breed_name]
+    return breed and breed.clamp_health_percent_damage or nil
+end
+
+-- The enemy's damage taken as sent by the server (includes healing), or nil.
+local function server_damage(unit, go_id)
+    local ok, dmg = pcall(function()
+        local gs = Managers.state.game_session:game_session()
+        if not gs or not go_id or Managers.state.unit_spawner:unit(go_id) ~= unit then return nil end
+        if not GameSession.game_object_exists(gs, go_id) then return nil end
+        if not GameSession.has_game_object_field(gs, go_id, "damage") then return nil end
+        return GameSession.game_object_field(gs, go_id, "damage")
+    end)
+    return ok and dmg or nil
+end
+
+-- Blighted Stimms (green): the server heals a stimmed enemy by each hit's
+-- damage until a pool of max health x a difficulty multiplier runs out. These
+-- heals land in the same network update as the hit, so they are replicated here.
+local GREEN_STIMMS = { "mutator_stimmed_minion_green", "ogryn_mutator_stimmed_minion_green" }
+local _stimm_mult = nil
+local function green_stimm_pool(unit, max_hp)
+    local ok, pool = pcall(function()
+        local buff_ext = ScriptUnit.has_extension(unit, "buff_system")
+        if not buff_ext then return nil end
+        local stimmed = false
+        for _, name in ipairs(GREEN_STIMMS) do
+            if buff_ext:has_buff_using_buff_template(name) then stimmed = true end
+        end
+        if not stimmed then return nil end
+        if _stimm_mult == nil then
+            local settings = require("scripts/settings/havoc/havoc_mutator_local_settings")
+            local mults = settings.mutator_stimmed_minions.buff_settings.green_stimm_settings.heal_multipliers
+            _stimm_mult = Managers.state.difficulty:get_table_entry_by_challenge(mults) or false
+        end
+        return _stimm_mult and max_hp * _stimm_mult or nil
+    end)
+    return ok and pool or nil
+end
+
+local function gameplay_time()
+    local ok, t = pcall(function() return Managers.time:time("gameplay") end)
+    return ok and t or os.clock()
 end
 
 -- ── Hooks ──────────────────────────────────────────────────────────────────
@@ -273,7 +340,15 @@ safe_hook("UnitSpawnerManager", "_add_network_unit",
                 max_health = go_field(gs, game_object_id, "health")
             end
 
-            _spawns[uuid] = { unit_name = unit_name, max_health = max_health, is_player = is_player }
+            _spawns[uuid] = {
+                unit_name   = unit_name,
+                max_health  = max_health,
+                is_player   = is_player,
+                go_id       = game_object_id,
+                hit_clamp   = not is_player and breed_hit_clamp(unit_name) or nil,
+                damage_seen = 0,
+                healed      = 0,
+            }
             _ability_charges["combat_ability_"..uuid]  = nil
             _ability_charges["grenade_ability_"..uuid] = nil
             _psyker_actions[uuid] = nil
@@ -289,9 +364,129 @@ safe_hook("UnitSpawnerManager", "_add_network_unit",
     end
 )
 
--- Hits: damage, kills, and damage taken. Each enemy keeps a running total of
--- reported damage from every attacker; a killing hit is credited only the
--- health it had left (max health - running total), so overkill is excluded.
+-- Hits: damage, kills, and damage taken. Each enemy keeps a running total
+-- of reported damage from every attacker, applying the server's per-hit limit
+-- and subtracting healing. A killing hit is credited only the health the
+-- enemy had left, so overkill is excluded.
+local RECOVER_WINDOW = 30
+local ORPHAN_WINDOW  = 2
+
+-- Reads the enemy's server damage; a drop means it was healed (unless its
+-- heals are already replicated from Blighted Stimms).
+local function observe_server_damage(def, unit)
+    local srv = server_damage(unit, def.go_id)
+    if not srv then return false end
+    if def.last_srv and srv < def.last_srv and not def.stimm_pool then
+        local heal = def.last_srv - srv
+        def.healed      = def.healed + heal
+        def.damage_seen = math.max(0, def.damage_seen - heal)
+    end
+    def.last_srv = srv
+    return true
+end
+
+-- The server's per-hit damage limit for this enemy, if it has one.
+local function clamp_hit(def, raw)
+    if def.hit_clamp and def.max_health then
+        return math.min(raw, def.max_health * def.hit_clamp)
+    end
+    return raw
+end
+
+-- Adds a non-killing hit to the enemy's running total, then applies the
+-- Blighted Stimms heal the server gives for it.
+local function apply_hit(def, amount)
+    def.damage_seen = def.damage_seen + amount
+    if def.stimm_pool and def.stimm_pool > 0 then
+        local heal = math.min(def.stimm_pool, amount)
+        def.stimm_pool  = def.stimm_pool - heal
+        def.healed      = def.healed + heal
+        def.damage_seen = math.max(0, def.damage_seen - heal)
+    end
+end
+
+-- Health the dead enemy lost that no hit report has accounted for yet.
+local function unaccounted(def)
+    return (def.max_health or 0) + def.healed - def.damage_seen
+end
+
+local function record_kill_on(def, raw)
+    local max_hp = def.max_health
+    local seen   = def.damage_seen or 0
+    local credit = max_hp and math.min(raw, math.max(0, max_hp - seen)) or 1
+    def.damage_seen = seen + credit
+    def.killed      = true
+    return credit
+end
+
+local function add_recovered(att, def, raw, credit, killed)
+    _attacks[#_attacks+1] = {
+        attacker_name   = att.unit_name,
+        attacker_known  = true,
+        attacker_player = true,
+        defender_name   = def.unit_name,
+        defender_player = false,
+        damage          = raw,
+        health_dmg      = credit,
+        killed          = killed,
+        enemy           = def,
+    }
+end
+
+-- Pairs a kill report that arrived without a target with an enemy that died
+-- with no kill report of its own. Kills by players are credited; kills by
+-- other enemies only use up that death.
+local function pair_orphan(att, raw, def)
+    if not (att and att.is_player) then
+        def.killed = true
+        return
+    end
+    _recovered = _recovered + 1
+    add_recovered(att, def, raw, record_kill_on(def, raw), true)
+end
+
+-- Oldest entry still in the window, preferring one that matches; removed.
+local function take_best(list, now, window, prefer)
+    local first_i, pref_i
+    for i = 1, #list do
+        local e = list[i]
+        if now - e.time <= window and not (e.def and e.def.killed) then
+            first_i = first_i or i
+            if prefer and prefer(e) then pref_i = i break end
+        end
+    end
+    local i = pref_i or first_i
+    return i and table.remove(list, i) or nil
+end
+
+-- Non-killing hits that arrive without a target belong to an enemy that died
+-- before the report was sent. The hit is added to a pending death, preferring
+-- one the attacker hit last and one with enough unaccounted health, and is
+-- never credited more than that health.
+local function attach_hit(att, raw, now)
+    local name = att and att.unit_name
+    local pick, pick_fit, pick_big
+    for _, e in ipairs(_deaths) do
+        local def = e.def
+        if now - e.time <= RECOVER_WINDOW and not def.killed then
+            local room = unaccounted(def)
+            local amt  = clamp_hit(def, raw)
+            if room > 0 then
+                if name and def.last_hitter == name and room >= amt then pick = pick or e end
+                if room >= amt then pick_fit = pick_fit or e end
+                if not pick_big or room > unaccounted(pick_big.def) then pick_big = e end
+            end
+        end
+    end
+    local e = pick or pick_fit or pick_big
+    if not e then return nil end
+    local def    = e.def
+    local credit = math.min(clamp_hit(def, raw), unaccounted(def))
+    apply_hit(def, credit)
+    if att and att.is_player then add_recovered(att, def, raw, credit, false) end
+    return def, credit
+end
+
 safe_hook("AttackReportManager", "add_attack_result",
     function(self, damage_profile, attacked_unit, attacking_unit, _dir, _pos,
              hit_weakspot, damage, attack_result)
@@ -300,30 +495,80 @@ safe_hook("AttackReportManager", "add_attack_result",
             local def    = _spawns[unit_uuid(attacked_unit)]
             local raw    = damage or 0
             local killed = attack_result == "died"
-            local health_dmg = raw
-            if def then
-                local seen = def.damage_seen or 0
+
+            if not attacked_unit then
+                local now = gameplay_time()
                 if killed then
-                    local max_hp = def.max_health
-                    health_dmg = max_hp and math.min(raw, math.max(0, max_hp - seen)) or 1
+                    local name  = att and att.unit_name
+                    local death = take_best(_deaths, now, RECOVER_WINDOW, function(e) return name ~= nil and e.def.last_hitter == name end)
+                    if death then
+                        pair_orphan(att, raw, death.def)
+                    else
+                        _orphans[#_orphans+1] = { att = att, raw = raw, time = now }
+                    end
+                elseif raw > 0 then
+                    attach_hit(att, raw, now)
                 end
-                def.damage_seen = seen + health_dmg
-            elseif killed then
+                return
+            end
+
+            local health_dmg = raw
+            if def and not def.is_player then
+                if def.stimm_pool == nil and def.max_health then
+                    def.stimm_pool = green_stimm_pool(attacked_unit, def.max_health) or nil
+                end
+                observe_server_damage(def, attacked_unit)
+                if not killed then _tracked[def] = attacked_unit end
+                raw = clamp_hit(def, raw)
+                if killed then
+                    health_dmg = record_kill_on(def, raw)
+                else
+                    health_dmg = raw
+                    apply_hit(def, raw)
+                end
+                if att and att.is_player then def.last_hitter = att.unit_name end
+            elseif killed and not def then
                 health_dmg = 1
             end
+
             _attacks[#_attacks+1] = {
                 attacker_name   = att and att.unit_name,
                 attacker_known  = att ~= nil,
                 attacker_player = att and att.is_player or false,
                 defender_name   = def and def.unit_name,
                 defender_player = def and def.is_player or false,
-                damage          = raw,
+                damage          = damage or 0,
                 health_dmg      = health_dmg,
                 killed          = killed,
+                enemy           = def and not def.is_player and def or nil,
             }
         end)
         if not ok then
             mod:echo("DT Exporter: add_attack_result error: "..tostring(err))
+        end
+    end
+)
+
+-- Enemy deaths on clients. A death without a kill report is kept for up to
+-- 30 seconds (the server holds hit reports back while a player's connection
+-- falls behind) so late reports without a target can be paired with it. A
+-- targetless kill report that arrives first waits 2 seconds for its death.
+safe_hook("MinionDeathManager", "rpc_minion_set_dead",
+    function(self, channel_id, unit_id)
+        local ok, err = pcall(function()
+            local unit = Managers.state.unit_spawner:unit(unit_id)
+            local def  = unit and _spawns[unit_uuid(unit)]
+            if not def or def.is_player or def.killed then return end
+            local now    = gameplay_time()
+            local orphan = take_best(_orphans, now, ORPHAN_WINDOW, function(e) return e.att ~= nil and e.att.unit_name == def.last_hitter end)
+            if orphan then
+                pair_orphan(orphan.att, orphan.raw, def)
+            else
+                _deaths[#_deaths+1] = { def = def, time = now }
+            end
+        end)
+        if not ok then
+            mod:echo("DT Exporter: rpc_minion_set_dead error: "..tostring(err))
         end
     end
 )
@@ -455,6 +700,23 @@ safe_hook("PlayerUnitMoodExtension", "update",
 )
 
 -- ── Main export ────────────────────────────────────────────────────────────
+-- Per-boss factors that scale credited damage down to what the server actually
+-- removed (phase protection, unkillable phases), keeping each player's share.
+local function boss_scales(attacks)
+    local credit, scale = {}, {}
+    for _, v in ipairs(attacks) do
+        local e = v.enemy
+        if e and BOSS[e.unit_name] then credit[e] = (credit[e] or 0) + v.health_dmg end
+    end
+    for e, credited in pairs(credit) do
+        local applied = e.killed and e.max_health or e.last_srv
+        if applied and credited > 0 then
+            scale[e] = math.min(1, (applied + (e.healed or 0)) / credited)
+        end
+    end
+    return scale
+end
+
 -- Builds per-player stats from a mission snapshot and saves the JSON.
 
 local function export_stats(src)
@@ -488,10 +750,12 @@ local function export_stats(src)
         return
     end
 
+    local boss_scale = boss_scales(src.attacks)
+
     local unknown_breeds = {}
 
     for _, v in ipairs(src.attacks) do
-        local health_dmg = v.health_dmg
+        local health_dmg = v.health_dmg * (v.enemy and boss_scale[v.enemy] or 1)
 
         if v.attacker_player and not v.defender_player then
             local p     = ensure(v.attacker_name)
@@ -595,6 +859,8 @@ local function export_stats(src)
 
     local export   = { session_date = date_str, session_time = time_str,
                        outcome = src.outcome or "unfinished",
+                       recovered_kills = src.recovered or 0,
+                       unmatched_kills = src.unmatched or 0,
                        players = {}, equipment = equipment, havoc = src.havoc }
     local exported = 0
     for pname, p in pairs(stats) do
@@ -628,6 +894,10 @@ local function export_stats(src)
 
     save_json(export)
     mod:echo("DT Exporter: Exported "..exported.." player(s)")
+    if (src.recovered or 0) > 0 or (src.unmatched or 0) > 0 then
+        mod:echo(string.format("DT Exporter: %d targetless kill(s) recovered, %d unmatched",
+            src.recovered or 0, src.unmatched or 0))
+    end
 
     if unknown_count > 0 then
         mod:echo("DT Exporter: WARNING - "..unknown_count
@@ -641,7 +911,31 @@ end
 
 local OUTCOME_LABELS = { won = "win", lost = "loss" }
 
+-- Drops deaths and targetless kill reports that found no match in time.
+local function prune_recovery()
+    local now = gameplay_time()
+    for i = #_deaths, 1, -1 do
+        if now - _deaths[i].time > RECOVER_WINDOW then table.remove(_deaths, i) end
+    end
+    for i = #_orphans, 1, -1 do
+        if now - _orphans[i].time > ORPHAN_WINDOW then
+            if _orphans[i].att and _orphans[i].att.is_player then _unmatched = _unmatched + 1 end
+            table.remove(_orphans, i)
+        end
+    end
+end
+
+-- Reads the server damage of every damaged, living enemy once per frame, so
+-- healing between hits is seen and bosses end on their latest health.
+local function refresh_tracked()
+    for def, unit in pairs(_tracked) do
+        if def.killed or not observe_server_damage(def, unit) then _tracked[def] = nil end
+    end
+end
+
 mod.update = function()
+    if #_deaths > 0 or #_orphans > 0 then prune_recovery() end
+    if next(_tracked) then pcall(refresh_tracked) end
     if _outcome or #_attacks == 0 then return end
     local ok, result = pcall(function()
         return Managers.state.game_mode:end_conditions_met_outcome()

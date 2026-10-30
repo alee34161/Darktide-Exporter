@@ -1,8 +1,8 @@
 """
-Darktide stats -> Google Sheets uploader
-========================================
+Darktide stats uploader
+=======================
 Reads a pdi_*.json export written by the DT_Exporter Darktide mod and
-uploads it to Google Sheets.
+uploads it to the stats database (Cloudflare D1, through the darktide-api Worker).
 
 The mod writes exports to:
   <Darktide install>\\binaries\\dump\\pdi_YYYY-MM-DD_HH-MM-SS.json
@@ -18,6 +18,9 @@ import os
 import re
 import json
 import fnmatch
+import urllib.request
+import ssl
+import urllib.error
 from pathlib import Path
 
 try:
@@ -28,20 +31,11 @@ except ImportError:
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-SPREADSHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "")
+API_URL      = os.environ.get("DT_API_URL", "").rstrip("/")
+UPLOAD_TOKEN = os.environ.get("DT_UPLOAD_TOKEN", "")
 
-PLAYER_TABS = {
-    "Steven":  "Steven Data",
-    "Injea":   "Injea Data",
-    "Lee":     "Lee Data",
-    "Blitter": "Blitter Data",
-}
-
-# Anyone not in PLAYER_TABS; their name is the last column of the stats row.
-RANDOMS_TAB = os.environ.get("RANDOMS_TAB_NAME", "Randoms")
-
-# One row per Havoc mission, keyed by date + time.
-HAVOC_TAB = os.environ.get("HAVOC_TAB_NAME", "Havoc")
+# The permanent players, in the order the webapp lists them; anyone else is a random.
+KNOWN_PLAYERS = ["Steven", "Injea", "Lee", "Blitter"]
 
 TODO = "N/A"
 
@@ -290,210 +284,100 @@ def _parse_havoc(havoc, session_date, session_time):
     if rank in (None, ""):
         return None
 
-    mutators = [
-        lookup("havoc_mutators", str(strip_dmf(c)))
-        for c in _dtf_list(havoc.get("circumstances"))
-    ]
+    keys = [str(strip_dmf(c)) for c in _dtf_list(havoc.get("circumstances"))]
     return {
         "date":       session_date,
         "start_time": session_time,
         "rank":       rank,
-        "mutators":   ", ".join(mutators),
+        "mutators":   [lookup("havoc_mutators", k) for k in keys],
+        "unknown":    [k for k in keys if lookup("havoc_mutators", k) == k],
     }
 
 
-# ── Google Sheets ──────────────────────────────────────────────────────────
-
-# Google Sheets client from the service account in .env.
-def get_sheets_service():
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-
-    email   = os.environ.get("GOOGLE_SERVICE_ACCOUNT_EMAIL", "").strip()
-    raw_key = os.environ.get("GOOGLE_PRIVATE_KEY", "").strip()
-    if (raw_key.startswith('"') and raw_key.endswith('"')) or \
-       (raw_key.startswith("'") and raw_key.endswith("'")):
-        raw_key = raw_key[1:-1]
-    key = raw_key.replace("\\n", "\n")
-
-    if not email or not key:
-        raise RuntimeError("Missing GOOGLE_SERVICE_ACCOUNT_EMAIL or GOOGLE_PRIVATE_KEY in .env")
-
-    creds = service_account.Credentials.from_service_account_info(
-        {
-            "type":           "service_account",
-            "client_email":   email,
-            "private_key":    key,
-            "private_key_id": "",
-            "client_id":      "",
-            "auth_uri":       "https://accounts.google.com/o/oauth2/auth",
-            "token_uri":      "https://oauth2.googleapis.com/token",
-        },
-        scopes=["https://www.googleapis.com/auth/spreadsheets"],
-    )
-    return build("sheets", "v4", credentials=creds, cache_discovery=False)
+# certifi's certificate list when installed (Windows' own list can hold an
+# expired root certificate), otherwise Python's default.
+def _ssl_context():
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
 
 
-# Next free stats row; stats rows are kept on even row numbers.
-def get_next_stats_row(service, tab_name):
-    result = service.spreadsheets().values().get(
-        spreadsheetId=SPREADSHEET_ID,
-        range=f"'{tab_name}'!A:A"
-    ).execute()
-    last = len(result.get("values", []))
-    if last < 2:
-        return 2
-    next_row = last + 1
-    return next_row + 1 if next_row % 2 != 0 else next_row
+SSL_CONTEXT = _ssl_context()
 
 
-# Equipment row: class, weapons, blitz, aura, ability, keystones.
-def _build_equip_row(stats):
-    return [
-        stats.get("class",          TODO),
-        stats.get("melee_weapon",   TODO),
-        stats.get("ranged_weapon",  TODO),
-        stats.get("blitz",          TODO),
-        stats.get("aura",           TODO),
-        stats.get("combat_ability", TODO),
-        stats.get("keystones",      TODO),
-    ]
+# ── Database upload ────────────────────────────────────────────────────────
 
-
-# Stats row in the data tabs' column order.
-def _build_stats_row(stats):
-    return [
-        stats["date"],               stats["start_time"],
-        stats["melee_elite_kills"],  stats["ranged_elite_kills"],
-        stats["melee_special_kills"],stats["ranged_special_kills"],
-        stats["ranged_trash_kills"], stats["horde_trash_kills"],
-        stats["boss_damage"],        stats["elite_damage"],
-        stats["horde_damage"],       stats["specialist_damage"],
-        stats["revives_done"],       stats["needed_revives"],
-        stats["ammo_used"],          stats["blitz_uses"],
-        stats["combat_ability_uses"],stats["damage_taken"],
-    ]
-
-
-# Create a tab if missing, writing `header` to row 1 if given.
-def _ensure_tab(service, title, header=None):
-    meta = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
-    if title in {sh["properties"]["title"] for sh in meta.get("sheets", [])}:
-        return
-    service.spreadsheets().batchUpdate(
-        spreadsheetId=SPREADSHEET_ID,
-        body={"requests": [{"addSheet": {"properties": {"title": title}}}]},
-    ).execute()
-    if header:
-        service.spreadsheets().values().update(
-            spreadsheetId=SPREADSHEET_ID,
-            range=f"'{title}'!A1",
-            valueInputOption="USER_ENTERED",
-            body={"values": [header]},
-        ).execute()
-
-
-# Randoms header: the data tabs' columns plus "Player Name".
-RANDOMS_HEADER = [
-    "Date", "Start Time",
-    "Melee Elites", "Ranged Elites",
-    "Melee Specials", "Ranged Specials",
-    "Ranged Trash", "Horde Trash",
-    "Boss Damage", "Elite Damage",
-    "Horde Damage", "Specialist Damage",
-    "Revives", "Needed Revives",
-    "Ammo Used", "Blitz Uses",
-    "Combat Ability Uses", "Damage Taken",
-    "Player Name",
+STAT_KEYS = [
+    "melee_elite_kills", "ranged_elite_kills", "melee_special_kills", "ranged_special_kills",
+    "horde_trash_kills", "ranged_trash_kills", "boss_damage", "elite_damage", "horde_damage",
+    "specialist_damage", "revives_done", "needed_revives", "ammo_used", "blitz_uses",
+    "combat_ability_uses", "damage_taken",
 ]
+LOADOUT_KEYS = ["class", "melee_weapon", "ranged_weapon", "blitz", "aura", "combat_ability", "keystones"]
 
 
-# Create the Randoms tab if missing and (re)write its standard header row.
-def ensure_randoms_tab_headers(service):
-    _ensure_tab(service, RANDOMS_TAB)
-    service.spreadsheets().values().update(
-        spreadsheetId=SPREADSHEET_ID,
-        range=f"'{RANDOMS_TAB}'!A1",
-        valueInputOption="USER_ENTERED",
-        body={"values": [RANDOMS_HEADER]},
-    ).execute()
-
-
-# Append this run's Havoc row.
-def upload_havoc(service, run_info, log_fn):
-    _ensure_tab(service, HAVOC_TAB, ["Date", "Start Time", "Havoc Rank", "Mutators"])
-    result = service.spreadsheets().values().get(
-        spreadsheetId=SPREADSHEET_ID, range=f"'{HAVOC_TAB}'!A:A"
-    ).execute()
-    row = len(result.get("values", [])) + 1
-    service.spreadsheets().values().update(
-        spreadsheetId=SPREADSHEET_ID,
-        range=f"'{HAVOC_TAB}'!A{row}",
-        valueInputOption="USER_ENTERED",
-        body={"values": [[
-            run_info["date"], run_info["start_time"], run_info["rank"],
-            run_info["mutators"],
-        ]]},
-    ).execute()
-    log_fn(f"  OK  Havoc rank {run_info['rank']} -> '{HAVOC_TAB}' row {row}")
-
-
-# Upload each player to their tab (unknown names go to Randoms), then the Havoc row.
-def upload_to_sheets(report, player_map, log_fn, run_info=None):
-    if not SPREADSHEET_ID:
-        raise RuntimeError(
-            "GOOGLE_SHEET_ID is not set. Add it to your .env file."
-        )
-
-    service = get_sheets_service()
-    randoms_headers_ensured = False
-
-    for in_game, stats in report.items():
+# The run as the API expects it: known players by their real name, others by
+# their mapped or in-game name.
+def build_run_payload(report, player_map, run_info, outcome):
+    first = next(iter(report.values()))
+    players = []
+    for position, (in_game, stats) in enumerate(report.items()):
         real_name = player_map.get(in_game, "").strip()
-        known     = next((k for k in PLAYER_TABS if k.lower() == real_name.lower()), None)
-        if known:
-            real_name = known
-        tab       = PLAYER_TABS.get(known) if known else None
+        known = next((k for k in KNOWN_PLAYERS if k.lower() == real_name.lower()), None)
+        entry = {
+            "player":       known or real_name or in_game,
+            "in_game_name": in_game,
+            "is_known":     known is not None,
+            "sort_order":   KNOWN_PLAYERS.index(known) if known else 100 + position,
+        }
+        entry.update({k: stats.get(k, TODO) for k in LOADOUT_KEYS})
+        entry.update({k: stats.get(k, 0) for k in STAT_KEYS})
+        players.append(entry)
+    return {
+        "date":    first["date"],
+        "time":    first["start_time"],
+        "outcome": outcome if outcome in ("win", "loss", "unfinished") else None,
+        "havoc":   {"rank": run_info["rank"], "mutators": run_info["mutators"]} if run_info else None,
+        "players": players,
+    }
 
-        if tab:
-            row = get_next_stats_row(service, tab)
-            service.spreadsheets().values().batchUpdate(
-                spreadsheetId=SPREADSHEET_ID,
-                body={
-                    "valueInputOption": "USER_ENTERED",
-                    "data": [
-                        {"range": f"'{tab}'!A{row}",     "values": [_build_stats_row(stats)]},
-                        {"range": f"'{tab}'!A{row + 1}", "values": [_build_equip_row(stats)]},
-                    ],
-                },
-            ).execute()
-            log_fn(f"  OK  {in_game} ({real_name}) -> '{tab}' rows {row}-{row+1}")
 
-        else:
-            display_name = real_name if real_name else in_game
+# POST runs to the API; returns its JSON reply or raises with the error text.
+def post_runs(body):
+    if not API_URL or not UPLOAD_TOKEN:
+        raise RuntimeError("DT_API_URL or DT_UPLOAD_TOKEN is not set. Add them to your .env file.")
+    request = urllib.request.Request(
+        f"{API_URL}/api/runs",
+        data=json.dumps(body).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type":  "application/json",
+            "Authorization": f"Bearer {UPLOAD_TOKEN}",
+            "User-Agent":    "darktide-uploader",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30, context=SSL_CONTEXT) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")
+        raise RuntimeError(f"API returned {e.code}: {detail}") from None
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Could not reach {API_URL}: {e.reason}") from None
 
-            if not randoms_headers_ensured:
-                ensure_randoms_tab_headers(service)
-                randoms_headers_ensured = True
 
-            row = get_next_stats_row(service, RANDOMS_TAB)
-
-            randoms_stats_row = _build_stats_row(stats) + [display_name]
-
-            service.spreadsheets().values().batchUpdate(
-                spreadsheetId=SPREADSHEET_ID,
-                body={
-                    "valueInputOption": "USER_ENTERED",
-                    "data": [
-                        {"range": f"'{RANDOMS_TAB}'!A{row}",     "values": [randoms_stats_row]},
-                        {"range": f"'{RANDOMS_TAB}'!A{row + 1}", "values": [_build_equip_row(stats)]},
-                    ],
-                },
-            ).execute()
-            log_fn(f"  OK  {in_game} ({display_name!r}) -> '{RANDOMS_TAB}' rows {row}-{row+1} [random]")
-
+# Upload one run with every player in it.
+def upload_run(report, player_map, log_fn, run_info=None, outcome=None):
+    payload = build_run_payload(report, player_map, run_info, outcome)
+    result = post_runs(payload)
+    for p in payload["players"]:
+        tag = "" if p["is_known"] else " [random]"
+        log_fn(f"  OK  {p['in_game_name']} -> {p['player']}{tag}")
     if run_info:
-        upload_havoc(service, run_info, log_fn)
+        log_fn(f"  OK  Havoc rank {run_info['rank']}")
+    log_fn(f"  Saved run {', '.join(result.get('saved', []))}")
 
 
 # ── GUI ────────────────────────────────────────────────────────────────────
@@ -501,10 +385,11 @@ def upload_to_sheets(report, player_map, log_fn, run_info=None):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Darktide PDI -> Google Sheets")
+        self.title("Darktide Uploader")
         self.resizable(False, False)
         self._report     = None
         self._run_info   = None
+        self._outcome    = None
         self._json_path  = tk.StringVar(value=str(DEFAULT_JSON_DIR))
         self._build_ui()
 
@@ -513,7 +398,7 @@ class App(tk.Tk):
 
         map_frame = ttk.LabelFrame(
             self,
-            text="Player Name Mapping  (in-game name  →  real name for Sheet tab)"
+            text="Player Name Mapping  (in-game name  →  real name)"
         )
         map_frame.grid(row=0, column=0, padx=PAD, pady=(PAD, 4), sticky="ew")
 
@@ -530,7 +415,7 @@ class App(tk.Tk):
 
         ttk.Label(
             map_frame,
-            text="Known names: Steven, Injea, Lee, Blitter  |  Anyone else → Randoms tab",
+            text=f"Known names: {', '.join(KNOWN_PLAYERS)}  |  Anyone else → Randoms",
             foreground="gray"
         ).grid(row=5, column=0, columnspan=2, padx=8, pady=(0, 6))
 
@@ -549,7 +434,7 @@ class App(tk.Tk):
         self._btn_load.grid(row=0, column=0, padx=6)
 
         self._btn_upload = ttk.Button(
-            act_row, text="Upload to Google Sheets",
+            act_row, text="Upload to Database",
             command=self._on_upload, state="disabled"
         )
         self._btn_upload.grid(row=0, column=1, padx=6)
@@ -631,10 +516,13 @@ class App(tk.Tk):
         self._report = report
         self._run_info = run_info
         outcome = read_outcome(path)
+        self._outcome = outcome
         self._log_msg(f"Result: {outcome.upper()}")
         self.title(f"Darktide Uploader - {os.path.basename(path)} - {outcome.upper()}")
         if run_info:
-            self._log_msg(f"Havoc rank {run_info['rank']} detected.")
+            self._log_msg(f"Havoc rank {run_info['rank']}: {', '.join(run_info['mutators']) or 'no mutators'}")
+            for key in run_info["unknown"]:
+                self._log_msg(f"  WARNING: mutator '{key}' is not in lookup.json; add it to \"havoc_mutators\".")
         self._populate_table(report)
         self._btn_upload.config(state="normal")
         self._log_msg(f"Loaded {len(report)} player(s): {', '.join(report.keys())}")
@@ -688,9 +576,13 @@ class App(tk.Tk):
                                    "Fill in at least one player name mapping.")
             return
 
+        unknown = self._run_info["unknown"] if self._run_info else []
+        warning = (f"\n\nUnrecognised mutators: {', '.join(unknown)}.\n"
+                   "Add them to lookup.json and reload the file first, or fix them later "
+                   "with fix_mutators.py.") if unknown else ""
         if not messagebox.askyesno(
             "Confirm Upload",
-            "Upload data to Google Sheets?\nNew rows will be appended."
+            "Upload this run to the database?\nUploading the same run again replaces it." + warning
         ):
             return
 
@@ -700,7 +592,7 @@ class App(tk.Tk):
 
         def run():
             try:
-                upload_to_sheets(self._report, player_map, self._log_msg, self._run_info)
+                upload_run(self._report, player_map, self._log_msg, self._run_info, self._outcome)
                 self.after(0, self._on_upload_done)
             except Exception as e:
                 self._log_msg(f"Upload error: {e}")
